@@ -307,8 +307,8 @@ When `reward_shaping=True`, the wrapper computes a dense reward signal:
 | Component | Trigger | Value |
 |-----------|---------|-------|
 | Step penalty | Every step | -0.001 (-0.002 in shop) |
-| Blind beaten | Round number increases | +0.15 × (ante / 8) |
-| Boss blind beaten | Ante number increases | +0.10 × (ante / 8) |
+| Blind beaten | Phase enters round eval (blind cleared) | +0.15 × (ante / 8) |
+| Boss blind beaten | Boss cleared (ante advances) | +0.10 × (ante / 8) |
 | Efficient clear | Hands remaining when blind beaten | +0.01 × hands_left |
 | Score progress | Chips increase toward blind target | +0.02 × min(delta / target, 1.0) |
 | Win | Game won | +0.5 |

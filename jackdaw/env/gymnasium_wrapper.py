@@ -142,10 +142,10 @@ class BalatroGymnasiumEnv(gymnasium.Env):
         self._action_table: list[FactoredAction] = []
         self._rng = np.random.default_rng()
         self._prev_ante: int = 1
-        self._prev_round: int = 0
+        self._prev_phase: str | None = None
         self._prev_chips: int = 0
         self._episode_max_ante: int = 1
-        self._episode_max_round: int = 0
+        self._episode_blinds_beaten: int = 0
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -167,10 +167,10 @@ class BalatroGymnasiumEnv(gymnasium.Env):
 
         game_obs, game_mask, info = self._inner.reset(**kwargs)
         self._prev_ante = self._inner.episode_ante
-        self._prev_round = 0
+        self._prev_phase = info.get("raw_state", {}).get("phase")
         self._prev_chips = 0
         self._episode_max_ante = 1
-        self._episode_max_round = 0
+        self._episode_blinds_beaten = 0
         self._action_table = self._enumerate_actions(game_mask, info)
         obs = self._build_obs(game_obs)
         return obs, {"action_mask": self.action_masks()}
@@ -191,7 +191,7 @@ class BalatroGymnasiumEnv(gymnasium.Env):
         step_info: dict[str, Any] = {"action_mask": self.action_masks()}
         if terminated or truncated:
             step_info["balatro/ante_reached"] = self._episode_max_ante
-            step_info["balatro/rounds_beaten"] = self._episode_max_round
+            step_info["balatro/rounds_beaten"] = self._episode_blinds_beaten
             step_info["balatro/won"] = self._inner.episode_won
         return obs, reward, terminated, truncated, step_info
 
@@ -207,49 +207,58 @@ class BalatroGymnasiumEnv(gymnasium.Env):
 
     def _compute_reward(self, info: dict[str, Any], terminated: bool, truncated: bool) -> float:
         """Compute step reward from game state deltas."""
+        gs: dict[str, Any] = info.get("raw_state", {})
+        phase = gs.get("phase")
+        ante = gs.get("round_resets", {}).get("ante", 1)
+        chips = gs.get("chips", 0)
+        prev_ante, prev_chips = self._prev_ante, self._prev_chips
+
+        # A blind is beaten on the step that enters ROUND_EVAL.
+        # ``gs["round"]`` increments on blind *select* (vanilla ease_round),
+        # so it cannot signal a win.  A boss clear advances the ante on
+        # that same step.
+        blind_beaten = phase == "round_eval" and self._prev_phase != "round_eval"
+        boss_beaten = blind_beaten and ante > prev_ante
+
+        # Update trackers (episode metrics are kept with or without shaping)
+        if blind_beaten:
+            self._episode_blinds_beaten += 1
+        self._prev_phase = phase
+        self._prev_ante = ante
+        self._prev_chips = chips
+        self._episode_max_ante = max(self._episode_max_ante, ante)
+
         if not self._reward_shaping:
             if terminated or truncated:
                 return 1.0 if self._inner.episode_won else -1.0
             return 0.0
 
-        gs: dict[str, Any] = info.get("raw_state", {})
-        phase = gs.get("phase")
-
         # Step cost — discourages stalling; doubled in shop phase
         reward = -0.002 if phase == "shop" else -0.001
 
-        ante = gs.get("round_resets", {}).get("ante", 1)
-        round_num = gs.get("round", 0)
-        chips = gs.get("chips", 0)
-        ante_scale = ante / 8.0
+        # Scale by the ante being played, not the one a boss clear advanced to
+        ante_scale = prev_ante / 8.0
 
-        # 1. Blind beaten: round increased → +0.15 * ante_scale
-        if round_num > self._prev_round:
+        # 1. Blind beaten → +0.15 * ante_scale
+        if blind_beaten:
             reward += 0.15 * ante_scale
-            # 2. Boss blind beaten (ante increased) → extra +0.1 * ante_scale
-            if ante > self._prev_ante:
+            # 2. Boss blind beaten → extra +0.1 * ante_scale
+            if boss_beaten:
                 reward += 0.1 * ante_scale
-            # 3. Efficient clear: hands remaining bonus
+            # 3. Efficient clear: hands remaining after the winning hand
             hands_left = gs.get("current_round", {}).get("hands_left", 0)
             reward += 0.01 * hands_left
 
         # 4. Score progress within a blind: chips gained toward target
         blind = gs.get("blind")
         blind_target = getattr(blind, "chips", 0) if blind is not None else 0
-        if blind_target > 0 and chips > self._prev_chips:
-            chip_delta = chips - self._prev_chips
+        if blind_target > 0 and chips > prev_chips:
+            chip_delta = chips - prev_chips
             reward += 0.02 * min(chip_delta / blind_target, 1.0)
 
         # 5. Terminal
         if terminated or truncated:
             reward += 0.5 if self._inner.episode_won else -0.2
-
-        # Update trackers
-        self._prev_round = round_num
-        self._prev_ante = ante
-        self._prev_chips = chips
-        self._episode_max_ante = max(self._episode_max_ante, ante)
-        self._episode_max_round = max(self._episode_max_round, round_num)
 
         return reward
 

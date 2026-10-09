@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from gymnasium import spaces
 
+from jackdaw.env.action_space import ActionType
 from jackdaw.env.game_interface import DirectAdapter
 from jackdaw.env.gymnasium_wrapper import MAX_ACTIONS, BalatroGymnasiumEnv
 
@@ -166,3 +167,56 @@ class TestRandomEpisodes:
             mask = info["action_mask"]
             if terminated or truncated:
                 break
+
+
+# ------------------------------------------------------------------
+# Reward shaping (issue #19)
+# ------------------------------------------------------------------
+
+
+def _action_index(env: BalatroGymnasiumEnv, action_type: ActionType) -> int:
+    for i, fa in enumerate(env._action_table):
+        if fa.action_type == action_type:
+            return i
+    raise AssertionError(f"{action_type.name} not in action table")
+
+
+class TestRewardShaping:
+    @pytest.fixture()
+    def shaped(self) -> BalatroGymnasiumEnv:
+        env = BalatroGymnasiumEnv(adapter_factory=DirectAdapter, reward_shaping=True)
+        env.reset(seed=7)
+        return env
+
+    def test_no_blind_bonus_on_select(self, shaped: BalatroGymnasiumEnv) -> None:
+        _, reward, *_ = shaped.step(_action_index(shaped, ActionType.SelectBlind))
+        assert reward < 0
+        assert shaped._episode_blinds_beaten == 0
+
+    def test_blind_bonus_paid_on_clear(self, shaped: BalatroGymnasiumEnv) -> None:
+        shaped.step(_action_index(shaped, ActionType.SelectBlind))
+        gs = shaped._inner._adapter.raw_state
+        gs["blind"].chips = 1
+        _, reward, *_ = shaped.step(_action_index(shaped, ActionType.PlayHand))
+        assert gs["phase"] == "round_eval"
+        hands_left = gs["current_round"]["hands_left"]
+        assert hands_left > 0
+        # step cost + blind bonus at ante 1 + unused hands + capped progress
+        expected = -0.001 + 0.15 / 8 + 0.01 * hands_left + 0.02
+        assert reward == pytest.approx(expected)
+        assert shaped._episode_blinds_beaten == 1
+
+    def test_boss_bonus_scaled_by_beaten_ante(self, shaped: BalatroGymnasiumEnv) -> None:
+        gs = shaped._inner._adapter.raw_state
+        shaped._prev_phase = "selecting_hand"
+        shaped._prev_ante = 1
+        gs["phase"] = "round_eval"
+        gs["round_resets"]["ante"] = 2
+        gs["current_round"]["hands_left"] = 0
+        gs["chips"] = 0
+        reward = shaped._compute_reward({"raw_state": gs}, False, False)
+        assert reward == pytest.approx(-0.001 + 0.15 / 8 + 0.1 / 8)
+
+        # Staying in ROUND_EVAL (e.g. using a consumable) pays nothing more
+        reward = shaped._compute_reward({"raw_state": gs}, False, False)
+        assert reward == pytest.approx(-0.001)
