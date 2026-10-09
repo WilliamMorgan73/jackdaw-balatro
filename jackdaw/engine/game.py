@@ -1394,7 +1394,9 @@ def _handle_use_consumable(
     """Use a consumable from the player's consumable slots.
 
     Consumables can be used in BLIND_SELECT, SELECTING_HAND,
-    ROUND_EVAL, and SHOP phases.  The phase does NOT change after use.
+    ROUND_EVAL, SHOP and PACK_OPENING phases.  The phase does NOT change
+    after use.  During an Arcana/Spectral pack the dealt pack hand is the
+    targeting hand, exactly as in vanilla.
 
     Sequence:
     1. Validate phase and index
@@ -1406,7 +1408,12 @@ def _handle_use_consumable(
     5. Track usage stats (last_tarot_planet)
     """
     _require_phase(
-        gs, GamePhase.BLIND_SELECT, GamePhase.SELECTING_HAND, GamePhase.ROUND_EVAL, GamePhase.SHOP
+        gs,
+        GamePhase.BLIND_SELECT,
+        GamePhase.SELECTING_HAND,
+        GamePhase.ROUND_EVAL,
+        GamePhase.SHOP,
+        GamePhase.PACK_OPENING,
     )
 
     consumables: list = gs.get("consumables", [])

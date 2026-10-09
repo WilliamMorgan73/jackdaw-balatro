@@ -475,6 +475,14 @@ class TestMaskPackOpening:
         mask = get_action_mask(gs)
         assert not mask.type_mask[ActionType.PickPackCard]
 
+    def test_owned_consumable_usable(self):
+        from jackdaw.engine.card_factory import create_consumable
+
+        gs = _pack_opening_state(consumables=[create_consumable("c_pluto")])
+        mask = get_action_mask(gs)
+        assert mask.type_mask[ActionType.UseConsumable]
+        assert mask.entity_masks[ActionType.UseConsumable].tolist() == [True]
+
 
 class TestMaskRoundEval:
     def test_cashout_available(self):

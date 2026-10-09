@@ -303,6 +303,9 @@ def get_action_mask(game_state: dict[str, Any]) -> ActionMask:
         type_mask[ActionType.SkipPack] = True
         _mask_sell_jokers(type_mask, entity_masks, jokers)
         _mask_sell_consumables(type_mask, entity_masks, consumables)
+        # Owned consumables stay usable mid-pack, as in vanilla — Arcana
+        # and Spectral packs target the dealt pack hand.
+        _mask_consumables(type_mask, entity_masks, game_state)
 
     return ActionMask(type_mask, card_mask, entity_masks, max_card_select, min_card_select)
 

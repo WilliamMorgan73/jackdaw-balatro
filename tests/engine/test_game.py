@@ -576,6 +576,58 @@ class TestPackOpening:
         assert gs["pack_cards"] == []
 
 
+class TestUseConsumableDuringPack:
+    """Owned consumables stay usable while a pack is open (issue #20)."""
+
+    def test_planet_usable_in_celestial_pack(self):
+        from jackdaw.engine.card_factory import create_consumable, create_joker
+        from jackdaw.engine.data.hands import HandType
+
+        gs = _setup_shop("PACK_USE_PLANET")
+        gs["phase"] = GamePhase.PACK_OPENING
+        gs["pack_type"] = "Celestial"
+        gs["pack_cards"] = [create_consumable("c_mercury")]
+        gs["pack_choices_remaining"] = 1
+        gs["consumables"] = [create_consumable("c_pluto")]
+        gs["jokers"] = [create_joker("j_joker")]
+
+        legal = get_legal_actions(gs)
+        assert UseConsumable(card_index=0) in legal
+        assert SellCard(area="jokers", card_index=0) in legal
+        assert SellCard(area="consumables", card_index=0) in legal
+
+        level_before = gs["hand_levels"][HandType.HIGH_CARD].level
+        step(gs, UseConsumable(card_index=0))
+        assert gs["hand_levels"][HandType.HIGH_CARD].level == level_before + 1
+        assert gs["consumables"] == []
+        assert gs["phase"] == GamePhase.PACK_OPENING
+
+    def test_tarot_targets_arcana_pack_hand(self):
+        from jackdaw.engine.card_factory import create_consumable
+
+        gs = _setup_shop("PACK_USE_TAROT")
+        pack = Card(center_key="p_arcana_normal_1", cost=4)
+        pack.ability = {"set": "Booster", "name": "Arcana Pack"}
+        gs["shop_boosters"] = [pack]
+        gs["dollars"] = 10
+        gs["consumables"] = [create_consumable("c_strength")]
+        step(gs, OpenBooster(card_index=0))
+        assert gs["hand"], "Arcana pack should deal a targeting hand"
+
+        target = gs["hand"][0]
+        rank_before = target.get_id()
+        step(gs, UseConsumable(card_index=0, target_indices=(0,)))
+        assert target.get_id() != rank_before
+        assert gs["phase"] == GamePhase.PACK_OPENING
+
+        deck_size = len(gs["deck"]) + len(gs["hand"])
+        step(gs, SkipPack())
+        assert gs["phase"] == GamePhase.SHOP
+        assert gs["hand"] == []
+        assert target in gs["deck"]
+        assert len(gs["deck"]) == deck_size
+
+
 class TestUseConsumable:
     def test_use_planet_in_shop(self):
         gs = _setup_shop("MERCURY_TEST")

@@ -20,7 +20,7 @@ Each phase permits a specific subset of actions:
 | SHOP                | BuyCard, SellCard, UseConsumable, RedeemVoucher,     |
 |                     | OpenBooster, Reroll, SwapJokersLeft/Right, NextRound |
 +---------------------+------------------------------------------------------+
-| PACK_OPENING        | PickPackCard, SkipPack                               |
+| PACK_OPENING        | PickPackCard, SkipPack, SellCard, UseConsumable      |
 +---------------------+------------------------------------------------------+
 | ROUND_EVAL          | CashOut                                              |
 +---------------------+------------------------------------------------------+
@@ -503,6 +503,15 @@ def _legal_pack_opening(gs: dict[str, Any]) -> list[Action]:
             actions.append(PickPackCard(card_index=i))
 
     actions.append(SkipPack())
+
+    # Selling and using owned cards stay live while a pack is open
+    # (vanilla has no state gate on either).
+    for i, joker in enumerate(gs.get("jokers", [])):
+        if not joker.eternal:
+            actions.append(SellCard(area="jokers", card_index=i))
+    for i in range(len(gs.get("consumables", []))):
+        actions.append(SellCard(area="consumables", card_index=i))
+    actions.extend(_usable_consumables(gs))
     return actions
 
 
