@@ -8,10 +8,16 @@ Random agents don't learn: this is the training loop's plumbing plus the
 random baseline.  A learning shop agent (e.g. a Dueling DQN) implements the
 same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
 
+Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
+row per episode), ``steps.jsonl`` (one line per shop decision) and
+``rounds.jsonl`` (one line per blind).  Visualise them with balatro-run-analysis.
+
 Usage::
 
     uv run python scripts/train_random_shop.py --episodes 200
     uv run python scripts/train_random_shop.py --episodes 200 --play smart
+    uv run python scripts/train_random_shop.py --play smart \\
+        --decks b_red,b_blue,b_black --stakes 1,2 --run-name smart_mixed
 """
 
 from __future__ import annotations
