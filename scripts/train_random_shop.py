@@ -355,11 +355,12 @@ class ShopEnv:
                 return True
             was_playing = self.gs["phase"] == GamePhase.SELECTING_HAND
             cashed_out |= self.gs["phase"] == GamePhase.ROUND_EVAL
+            ante_played = self.gs["round_resets"]["ante"]
             a = self.play_agent.act(self.gs, self._mask, self.env)
             obs, term, trunc, mask, info = self.env.step(a)
             self._obs, self._mask = obs, info["action_mask"]
             if was_playing and self.gs["phase"] != GamePhase.SELECTING_HAND:
-                self._log_round()
+                self._log_round(ante_played)
             if term or trunc:
                 return True
         self.stats["shops_visited"] += self.gs["phase"] == GamePhase.SHOP
@@ -367,11 +368,13 @@ class ShopEnv:
             self._log_shop("enter")
         return False
 
-    def _log_round(self) -> None:
+    def _log_round(self, ante: int) -> None:
         """Record the blind that just ended (chips/blind still hold its values).
 
-        A beaten blind is in ROUND_EVAL with ``round_earnings`` (the cash-out
-        about to be paid); a lost one has no earnings.
+        ``ante`` is the ante the blind was played in: beating a boss advances
+        ``round_resets.ante`` before we get here.  A beaten blind is in
+        ROUND_EVAL with ``round_earnings`` (the cash-out about to be paid); a
+        lost one has no earnings.
         """
         gs = self.gs
         blind = gs.get("blind")
@@ -381,7 +384,7 @@ class ShopEnv:
         earnings = gs.get("round_earnings") if beaten else None
         self.logger.log_round(
             episode=self.episode,
-            ante=gs["round_resets"]["ante"],
+            ante=ante,
             round=gs["round"],
             blind_key=blind.key,
             target=blind.chips,
@@ -548,6 +551,9 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         "shop_agent": type(shop_agent).__name__,
         "n_actions": N_ACTIONS,
         "action_names": ACTION_NAMES,
+        # 2: rounds.jsonl ante = ante the blind was played in (v1 logged beaten
+        # bosses under the next ante), cash-out breakdown, shops.jsonl
+        "log_version": 2,
         "started": datetime.now().isoformat(timespec="seconds"),
         "jackdaw_commit": commit or None,
     }
