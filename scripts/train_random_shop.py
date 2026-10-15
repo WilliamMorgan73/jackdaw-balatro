@@ -18,9 +18,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import random
+import subprocess
 import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -199,6 +202,46 @@ def r_ante(prev_ante: int, curr_ante: int, alpha: float = 1.0) -> float:
     return alpha * prev_ante if curr_ante > prev_ante else 0.0
 
 
+def shop_item_key(gs: dict[str, Any], a: int) -> tuple[str | None, int | None]:
+    """(center_key, cost) of the item shop action ``a`` targets, read before stepping."""
+    if a in BUY_CARD:
+        items, slot = gs.get("shop_cards", []), a - BUY_CARD[0]
+    elif a in BUY_PACK:
+        items, slot = gs.get("shop_boosters", []), a - BUY_PACK[0]
+    elif a == BUY_VOUCHER:
+        items, slot = gs.get("shop_vouchers", []), 0
+    elif a in SELL_JOKER:
+        items, slot = gs.get("jokers", []), a - SELL_JOKER[0]
+    elif a in SELL_CONS:
+        items, slot = gs.get("consumables", []), a - SELL_CONS[0]
+    elif a in USE_CONS:
+        items, slot = gs.get("consumables", []), a - USE_CONS[0]
+    else:
+        return None, None
+    if slot >= len(items):
+        return None, None
+    return items[slot].center_key, items[slot].cost
+
+
+class RunLogger:
+    """Writes steps.jsonl (one line per shop decision) and rounds.jsonl
+    (one line per blind played) into a run directory."""
+
+    def __init__(self, out_dir: Path) -> None:
+        self._steps = open(out_dir / "steps.jsonl", "w")
+        self._rounds = open(out_dir / "rounds.jsonl", "w")
+
+    def log_step(self, **row: Any) -> None:
+        self._steps.write(json.dumps(row) + "\n")
+
+    def log_round(self, **row: Any) -> None:
+        self._rounds.write(json.dumps(row) + "\n")
+
+    def close(self) -> None:
+        self._steps.close()
+        self._rounds.close()
+
+
 class ShopEnv:
     """Exposes only shop decisions; the play agent drives everything else.
 
@@ -212,6 +255,7 @@ class ShopEnv:
         seed_prefix: str = "TRAIN",
         back_keys: tuple[str, ...] = ("b_red",),
         stakes: tuple[int, ...] = (1,),
+        logger: RunLogger | None = None,
     ) -> None:
         self.env = BalatroEnvironment(
             adapter_factory=DirectAdapter,
@@ -220,6 +264,8 @@ class ShopEnv:
             stakes=list(stakes),
         )
         self.play_agent = play_agent
+        self.logger = logger
+        self.episode = -1
 
     @property
     def gs(self) -> dict[str, Any]:
@@ -227,21 +273,50 @@ class ShopEnv:
 
     def reset(self) -> tuple[np.ndarray, np.ndarray, bool]:
         self.stats: Counter[str] = Counter()
+        self.episode += 1
+        self.step_idx = 0
         obs, mask, info = self.env.reset()
+        self.seed = f"{self.env._seed_prefix}_{self.episode}"  # BalatroEnvironment.reset() scheme
         self._obs, self._mask = obs, info["action_mask"]
         done = self._autoplay()
         return self._state(), self._mask17(done), done
 
     def step(self, a: int) -> tuple[np.ndarray, np.ndarray, float, bool, dict[str, Any]]:
+        gs = self.gs
         prev_ante = self.env.episode_ante
-        dollars_before = self.gs["dollars"]
+        dollars_before = gs["dollars"]
+        item_key, item_cost = shop_item_key(gs, a)
+        context = {
+            "ante": gs["round_resets"]["ante"],
+            "round": gs["round"],
+            "blind_on_deck": gs.get("blind_on_deck"),
+            "jokers_before": [j.center_key for j in gs["jokers"]],
+            "consumables_before": [c.center_key for c in gs["consumables"]],
+        }
+
         obs, term, trunc, mask, info = self.env.step(to_factored(a))
         self._obs, self._mask = obs, info["action_mask"]
         self.stats[ACTION_NAMES[a]] += 1
-        self.stats["dollars_spent"] += max(0, dollars_before - self.gs["dollars"])
+        dollars_after = self.gs["dollars"]
+        self.stats["dollars_spent"] += max(0, dollars_before - dollars_after)
 
         done = term or trunc or self._autoplay()
         reward = r_ante(prev_ante, self.env.episode_ante)
+        if self.logger:
+            self.logger.log_step(
+                episode=self.episode,
+                step=self.step_idx,
+                **context,
+                dollars_before=dollars_before,
+                dollars_after=dollars_after,
+                action=a,
+                action_name=ACTION_NAMES[a],
+                item_key=item_key,
+                item_cost=item_cost,
+                reward=reward,
+                done=bool(done),
+            )
+        self.step_idx += 1
         info = {"ante": self.env.episode_ante, "won": self.env.episode_won}
         return self._state(), self._mask17(done), reward, done, info
 
@@ -250,13 +325,32 @@ class ShopEnv:
         while self.gs["phase"] != GamePhase.SHOP:
             if self.gs["phase"] == GamePhase.GAME_OVER:
                 return True
+            was_playing = self.gs["phase"] == GamePhase.SELECTING_HAND
             a = self.play_agent.act(self.gs, self._mask, self.env)
             obs, term, trunc, mask, info = self.env.step(a)
             self._obs, self._mask = obs, info["action_mask"]
+            if was_playing and self.gs["phase"] != GamePhase.SELECTING_HAND:
+                self._log_round()
             if term or trunc:
                 return True
         self.stats["shops_visited"] += self.gs["phase"] == GamePhase.SHOP
         return False
+
+    def _log_round(self) -> None:
+        """Record the blind that just ended (chips/blind still hold its values)."""
+        gs = self.gs
+        blind = gs.get("blind")
+        if not self.logger or blind is None:
+            return
+        self.logger.log_round(
+            episode=self.episode,
+            ante=gs["round_resets"]["ante"],
+            round=gs["round"],
+            blind_key=blind.key,
+            target=blind.chips,
+            chips=gs["chips"],
+            beaten=gs["phase"] != GamePhase.GAME_OVER,
+        )
 
     def _state(self) -> np.ndarray:
         return self._obs.global_context
@@ -275,10 +369,12 @@ def train(args: argparse.Namespace) -> None:
     random.seed(args.seed)  # BalatroEnvironment samples back_keys/stakes from global random
     play_agent = RandomPlayAgent(rng) if args.play == "random" else SmartPlayAgent()
     shop_agent: ShopAgent = RandomShopAgent(rng)
-    env = ShopEnv(play_agent, seed_prefix=args.seed_prefix)
 
-    out_dir = Path(args.out_dir) / f"random_shop_{args.play}_play"
+    out_dir = Path(args.out_dir) / (args.run_name or f"random_shop_{args.play}_play")
     out_dir.mkdir(parents=True, exist_ok=True)
+    logger = None if args.no_step_log else RunLogger(out_dir)
+    env = ShopEnv(play_agent, seed_prefix=args.seed_prefix, logger=logger)
+    write_config(out_dir, args, play_agent, shop_agent)
     writer = None
     try:
         from torch.utils.tensorboard import SummaryWriter
@@ -296,6 +392,10 @@ def train(args: argparse.Namespace) -> None:
         "shops_visited",
         "dollars_spent",
         "seconds",
+        "seed",
+        "final_round",
+        "final_dollars",
+        "final_jokers",
     ] + ACTION_NAMES
     csv_file = open(out_dir / "episodes.csv", "w", newline="")
     log = csv.DictWriter(csv_file, fieldnames=fields)
@@ -328,6 +428,10 @@ def train(args: argparse.Namespace) -> None:
             "shops_visited": env.stats["shops_visited"],
             "dollars_spent": env.stats["dollars_spent"],
             "seconds": round(time.perf_counter() - t0, 4),
+            "seed": env.seed,
+            "final_round": env.gs["round"],
+            "final_dollars": env.gs["dollars"],
+            "final_jokers": ";".join(j.center_key for j in env.gs["jokers"]),
             **{name: env.stats[name] for name in ACTION_NAMES},
         }
         log.writerow(row)
@@ -342,6 +446,8 @@ def train(args: argparse.Namespace) -> None:
             )
 
     csv_file.close()
+    if logger:
+        logger.close()
     if writer:
         writer.close()
     dist = Counter(antes)
@@ -353,7 +459,29 @@ def train(args: argparse.Namespace) -> None:
         f"mean ante {np.mean(antes):.2f}; ante reached: "
         + ", ".join(f"{k}: {dist[k]}" for k in sorted(dist))
     )
-    print(f"logs: {out_dir}/episodes.csv")
+    print(f"logs: {out_dir}/")
+
+
+def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_agent: Any) -> None:
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent,
+        ).stdout.strip()
+    except OSError:
+        commit = ""
+    config = {
+        **vars(args),
+        "play_agent": type(play_agent).__name__,
+        "shop_agent": type(shop_agent).__name__,
+        "n_actions": N_ACTIONS,
+        "action_names": ACTION_NAMES,
+        "started": datetime.now().isoformat(timespec="seconds"),
+        "jackdaw_commit": commit or None,
+    }
+    (out_dir / "config.json").write_text(json.dumps(config, indent=2))
 
 
 def main() -> None:
@@ -369,6 +497,8 @@ def main() -> None:
     ap.add_argument("--seed-prefix", default="TRAIN")
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out-dir", default="runs")
+    ap.add_argument("--run-name", default=None, help="default: random_shop_<play>_play")
+    ap.add_argument("--no-step-log", action="store_true", help="skip steps.jsonl / rounds.jsonl")
     train(ap.parse_args())
 
 
