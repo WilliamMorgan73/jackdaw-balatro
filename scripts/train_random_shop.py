@@ -9,8 +9,9 @@ random baseline.  A learning shop agent (e.g. a Dueling DQN) implements the
 same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
 
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
-row per episode), ``steps.jsonl`` (one line per shop decision) and
-``rounds.jsonl`` (one line per blind).  Visualise them with balatro-run-analysis.
+row per episode), ``steps.jsonl`` (one line per shop decision), ``rounds.jsonl``
+(one line per blind, with the cash-out breakdown) and ``shops.jsonl`` (what each
+shop offered, on entry and after rerolls).  Visualise them with balatro-run-analysis.
 
 Usage::
 
@@ -230,22 +231,39 @@ def shop_item_key(gs: dict[str, Any], a: int) -> tuple[str | None, int | None]:
 
 
 class RunLogger:
-    """Writes steps.jsonl (one line per shop decision) and rounds.jsonl
-    (one line per blind played) into a run directory."""
+    """Writes steps.jsonl (one line per shop decision), rounds.jsonl (one line
+    per blind played, with the cash-out breakdown) and shops.jsonl (one line
+    per shop offer: on entering a shop and after each reroll)."""
 
     def __init__(self, out_dir: Path) -> None:
-        self._steps = open(out_dir / "steps.jsonl", "w")
-        self._rounds = open(out_dir / "rounds.jsonl", "w")
+        self._files = {
+            name: open(out_dir / f"{name}.jsonl", "w") for name in ("steps", "rounds", "shops")
+        }
 
     def log_step(self, **row: Any) -> None:
-        self._steps.write(json.dumps(row) + "\n")
+        self._files["steps"].write(json.dumps(row) + "\n")
 
     def log_round(self, **row: Any) -> None:
-        self._rounds.write(json.dumps(row) + "\n")
+        self._files["rounds"].write(json.dumps(row) + "\n")
+
+    def log_shop(self, **row: Any) -> None:
+        self._files["shops"].write(json.dumps(row) + "\n")
 
     def close(self) -> None:
-        self._steps.close()
-        self._rounds.close()
+        for f in self._files.values():
+            f.close()
+
+
+SHOP_AREAS = (("card", "shop_cards"), ("voucher", "shop_vouchers"), ("pack", "shop_boosters"))
+EARNINGS = {
+    "earn_blind": "blind_reward",
+    "earn_hands": "unused_hands_bonus",
+    "earn_discards": "unused_discards_bonus",
+    "earn_interest": "interest",
+    "earn_jokers": "joker_dollars",
+    "earn_rent": "rental_cost",
+    "earn_total": "total",
+}
 
 
 class ShopEnv:
@@ -305,13 +323,17 @@ class ShopEnv:
         self.stats[ACTION_NAMES[a]] += 1
         dollars_after = self.gs["dollars"]
         self.stats["dollars_spent"] += max(0, dollars_before - dollars_after)
+        step_idx = self.step_idx
+        self.step_idx += 1  # shop offers logged from here on link to the *next* step
+        if a == REROLL and self.gs["phase"] == GamePhase.SHOP:
+            self._log_shop("reroll")
 
         done = term or trunc or self._autoplay()
         reward = r_ante(prev_ante, self.env.episode_ante)
         if self.logger:
             self.logger.log_step(
                 episode=self.episode,
-                step=self.step_idx,
+                step=step_idx,
                 **context,
                 dollars_before=dollars_before,
                 dollars_after=dollars_after,
@@ -322,16 +344,17 @@ class ShopEnv:
                 reward=reward,
                 done=bool(done),
             )
-        self.step_idx += 1
         info = {"ante": self.env.episode_ante, "won": self.env.episode_won}
         return self._state(), self._mask17(done), reward, done, info
 
     def _autoplay(self) -> bool:
         """Let the play agent act until the next shop state. Returns done."""
+        cashed_out = False
         while self.gs["phase"] != GamePhase.SHOP:
             if self.gs["phase"] == GamePhase.GAME_OVER:
                 return True
             was_playing = self.gs["phase"] == GamePhase.SELECTING_HAND
+            cashed_out |= self.gs["phase"] == GamePhase.ROUND_EVAL
             a = self.play_agent.act(self.gs, self._mask, self.env)
             obs, term, trunc, mask, info = self.env.step(a)
             self._obs, self._mask = obs, info["action_mask"]
@@ -340,14 +363,22 @@ class ShopEnv:
             if term or trunc:
                 return True
         self.stats["shops_visited"] += self.gs["phase"] == GamePhase.SHOP
+        if cashed_out:  # a new shop, not a return from a pack opened in the shop
+            self._log_shop("enter")
         return False
 
     def _log_round(self) -> None:
-        """Record the blind that just ended (chips/blind still hold its values)."""
+        """Record the blind that just ended (chips/blind still hold its values).
+
+        A beaten blind is in ROUND_EVAL with ``round_earnings`` (the cash-out
+        about to be paid); a lost one has no earnings.
+        """
         gs = self.gs
         blind = gs.get("blind")
         if not self.logger or blind is None:
             return
+        beaten = gs["phase"] == GamePhase.ROUND_EVAL
+        earnings = gs.get("round_earnings") if beaten else None
         self.logger.log_round(
             episode=self.episode,
             ante=gs["round_resets"]["ante"],
@@ -356,6 +387,29 @@ class ShopEnv:
             target=blind.chips,
             chips=gs["chips"],
             beaten=gs["phase"] != GamePhase.GAME_OVER,
+            dollars_at_end=gs["dollars"],
+            interest_cap=gs.get("interest_cap", 25),
+            **{col: getattr(earnings, attr, None) for col, attr in EARNINGS.items()},
+        )
+
+    def _log_shop(self, reason: str) -> None:
+        """Record what the shop offers right now, and at what price."""
+        if not self.logger:
+            return
+        gs = self.gs
+        self.logger.log_shop(
+            episode=self.episode,
+            step=self.step_idx,
+            ante=gs["round_resets"]["ante"],
+            round=gs["round"],
+            reason=reason,
+            dollars=gs["dollars"],
+            reroll_cost=gs.get("current_round", {}).get("reroll_cost"),
+            items=[
+                {"kind": kind, "key": c.center_key, "cost": c.cost}
+                for kind, area in SHOP_AREAS
+                for c in gs.get(area, [])
+            ],
         )
 
     def _state(self) -> np.ndarray:
