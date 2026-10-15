@@ -9,9 +9,10 @@ random baseline.  A learning shop agent (e.g. a Dueling DQN) implements the
 same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
 
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
-row per episode), ``steps.jsonl`` (one line per shop decision), ``rounds.jsonl``
-(one line per blind, with the cash-out breakdown) and ``shops.jsonl`` (what each
-shop offered, on entry and after rerolls).  Visualise them with balatro-run-analysis.
+row per episode), ``steps.jsonl`` (one line per shop decision, with the actions
+that were legal), ``rounds.jsonl`` (one line per blind, with the cash-out
+breakdown) and ``shops.jsonl`` (what each shop offered, on entry and after
+rerolls).  Visualise them with balatro-run-analysis.
 
 Usage::
 
@@ -316,6 +317,7 @@ class ShopEnv:
             "blind_on_deck": gs.get("blind_on_deck"),
             "jokers_before": [j.center_key for j in gs["jokers"]],
             "consumables_before": [c.center_key for c in gs["consumables"]],
+            "legal": np.flatnonzero(shop_mask(self._mask)).tolist(),  # shop action indices
         }
 
         obs, term, trunc, mask, info = self.env.step(to_factored(a))
@@ -553,7 +555,8 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         "action_names": ACTION_NAMES,
         # 2: rounds.jsonl ante = ante the blind was played in (v1 logged beaten
         # bosses under the next ante), cash-out breakdown, shops.jsonl
-        "log_version": 2,
+        # 3: steps.jsonl legal (shop action indices legal at each decision)
+        "log_version": 3,
         "started": datetime.now().isoformat(timespec="seconds"),
         "jackdaw_commit": commit or None,
     }
