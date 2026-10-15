@@ -50,8 +50,19 @@ def phase_of(env: BalatroEnvironment) -> GamePhase:
 
 def autoplay_action(env: BalatroEnvironment) -> FactoredAction:
     """smart_agent's choice for the current state, as a FactoredAction."""
+    from jackdaw.engine.actions import PickPackCard
+    from jackdaw.env.action_space import get_action_mask
+
     gs = env._adapter.raw_state
-    return engine_action_to_factored(smart_agent(gs, env._adapter.get_legal_actions()), gs)
+    # get_legal_actions() offers pack picks that the executor rejects
+    # (pack_pick_block_reason); the action mask doesn't, so filter by it.
+    picks = get_action_mask(gs).entity_masks.get(AT.PickPackCard)
+    legal = [
+        a
+        for a in env._adapter.get_legal_actions()
+        if not isinstance(a, PickPackCard) or (picks is not None and picks[a.card_index])
+    ]
+    return engine_action_to_factored(smart_agent(gs, legal), gs)
 
 
 def advance_to(env: BalatroEnvironment, target: GamePhase, max_steps: int = 2000) -> tuple:
@@ -236,7 +247,7 @@ def check_deepcopy() -> None:
     copy_t, blind_t = [], []
     for ep in range(5):
         e = make_env("TIMING")
-        e.reset()
+        e.reset(seed=f"TIMING_{ep}")
         for _ in range(4):
             advance_to(e, GamePhase.SHOP)
             if phase_of(e) != GamePhase.SHOP:
@@ -318,7 +329,7 @@ def check_packs(episodes: int) -> None:
     picks_masked_all = 0
     for ep in range(episodes):
         env = make_env("PACKS")
-        env.reset()
+        env.reset(seed=f"PACKS_{ep}")
         for _ in range(6):
             advance_to(env, GamePhase.SHOP)
             gs = env._adapter.raw_state
@@ -453,7 +464,7 @@ def run_prototype(episodes: int) -> None:
     t0 = time.perf_counter()
     for ep in range(episodes):
         env = make_env("EVAL")
-        _, mask, info = env.reset()
+        _, mask, info = env.reset(seed=f"EVAL_{ep}")
         try:
             for _ in range(5000):
                 gs = env._adapter.raw_state
@@ -493,7 +504,8 @@ def run_prototype(episodes: int) -> None:
         "E2E. seed_prefix determinism",
         "OK" if same and diff else "FAIL",
         f"same prefix -> identical first shop: {same}; EVAL vs TRAIN differ: {diff}\n"
-        "Seeds are f'{prefix}_{episode_index}', so a fresh env replays the same EVAL runs.\n"
+        "Seeds are f'{prefix}_{n}' where n counts resets of THAT env object: reuse one env to\n"
+        "get distinct runs (a fresh env per episode replays seed _0 every time).\n"
         "NOTE: with several back_keys/stakes, BalatroEnvironment picks them with the global"
         " `random` module -> call random.seed(...) for reproducible SRQ4 sweeps, or construct"
         " one env per (deck, stake).",
