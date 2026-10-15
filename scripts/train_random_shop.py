@@ -373,7 +373,13 @@ def train(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir) / (args.run_name or f"random_shop_{args.play}_play")
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = None if args.no_step_log else RunLogger(out_dir)
-    env = ShopEnv(play_agent, seed_prefix=args.seed_prefix, logger=logger)
+    env = ShopEnv(
+        play_agent,
+        seed_prefix=args.seed_prefix,
+        back_keys=tuple(args.decks),
+        stakes=tuple(args.stakes),
+        logger=logger,
+    )
     write_config(out_dir, args, play_agent, shop_agent)
     writer = None
     try:
@@ -393,6 +399,8 @@ def train(args: argparse.Namespace) -> None:
         "dollars_spent",
         "seconds",
         "seed",
+        "deck",
+        "stake",
         "final_round",
         "final_dollars",
         "final_jokers",
@@ -429,6 +437,8 @@ def train(args: argparse.Namespace) -> None:
             "dollars_spent": env.stats["dollars_spent"],
             "seconds": round(time.perf_counter() - t0, 4),
             "seed": env.seed,
+            "deck": env.gs["selected_back_key"],
+            "stake": env.gs["stake"],
             "final_round": env.gs["round"],
             "final_dollars": env.gs["dollars"],
             "final_jokers": ";".join(j.center_key for j in env.gs["jokers"]),
@@ -495,6 +505,18 @@ def main() -> None:
     )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seed-prefix", default="TRAIN")
+    ap.add_argument(
+        "--decks",
+        type=lambda s: s.split(","),
+        default=["b_red"],
+        help="comma-separated deck keys, sampled per episode (e.g. b_red,b_blue,b_black)",
+    )
+    ap.add_argument(
+        "--stakes",
+        type=lambda s: [int(x) for x in s.split(",")],
+        default=[1],
+        help="comma-separated stakes 1-8, sampled per episode",
+    )
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out-dir", default="runs")
     ap.add_argument("--run-name", default=None, help="default: random_shop_<play>_play")
