@@ -704,7 +704,7 @@ def buy_card(
     game_state["dollars"] = game_state.get("dollars", 0) - card.cost
 
     # -- 8. Inflation --
-    if game_state.get("inflation_modifier"):
+    if game_state.get("inflation_modifier") or game_state.get("modifiers", {}).get("inflation"):
         game_state["inflation"] = game_state.get("inflation", 0) + 1
         inflation = game_state["inflation"]
         discount = game_state.get("discount_percent", 0)
