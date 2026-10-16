@@ -25,7 +25,11 @@ import gymnasium
 import numpy as np
 from gymnasium import spaces
 
-from jackdaw.env.action_space import ActionType, get_consumable_target_info
+from jackdaw.env.action_space import (
+    ActionType,
+    _with_forced_card,
+    get_consumable_target_info,
+)
 from jackdaw.env.balatro_env import BalatroEnvironment
 from jackdaw.env.balatro_spec import balatro_game_spec
 from jackdaw.env.game_interface import GameAdapter
@@ -280,6 +284,11 @@ class BalatroGymnasiumEnv(gymnasium.Env):
             elif t in _CARD_ONLY_TYPES:
                 legal_cards = np.nonzero(mask.card_mask)[0]
                 combos = _card_combos(legal_cards, mask.min_card_select, mask.max_card_select)
+                raw_state = info.get("raw_state")
+                if raw_state is not None:
+                    # Cerulean Bell: a combo without the forced card plays as one
+                    # with it, so keep each engine selection once.
+                    combos = list(dict.fromkeys(_with_forced_card(raw_state, c) for c in combos))
                 combos = _subsample(combos, CARD_COMBO_BUDGET, self._rng)
                 for combo in combos:
                     actions.append(FactoredAction(action_type=t, card_target=combo))
