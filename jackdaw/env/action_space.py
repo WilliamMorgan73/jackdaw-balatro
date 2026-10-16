@@ -553,6 +553,26 @@ def _default_use_targets(
     return default_use_targets(consumables[consumable_index], game_state)
 
 
+def _with_forced_card(game_state: dict[str, Any], indices: tuple[int, ...]) -> tuple[int, ...]:
+    """Add Cerulean Bell's forced card to a play/discard selection.
+
+    In vanilla the forced card stays highlighted (blind.lua:572-87), so every
+    selection includes it and at most 4 other cards fit.  The mask can't express
+    "must include", so a selection without it is completed here the way the live
+    bot does: the forced card is added and, past 5 cards, the last requested card
+    is dropped.
+    """
+    hand = game_state.get("hand", [])
+    for i, card in enumerate(hand):
+        ability = getattr(card, "ability", None)
+        if isinstance(ability, dict) and ability.get("forced_selection"):
+            if i in indices:
+                return indices
+            kept = list(indices)[:4]  # 5-card highlight limit, forced card included
+            return tuple(sorted([*kept, i]))
+    return indices
+
+
 def factored_to_engine_action(
     fa: FactoredAction,
     game_state: dict[str, Any],
@@ -581,12 +601,12 @@ def factored_to_engine_action(
     if at == ActionType.PlayHand:
         if not fa.card_target:
             raise ValueError("PlayHand requires card_target")
-        return EnginePlayHand(card_indices=fa.card_target)
+        return EnginePlayHand(card_indices=_with_forced_card(game_state, fa.card_target))
 
     if at == ActionType.Discard:
         if not fa.card_target:
             raise ValueError("Discard requires card_target")
-        return EngineDiscard(card_indices=fa.card_target)
+        return EngineDiscard(card_indices=_with_forced_card(game_state, fa.card_target))
 
     if at == ActionType.SelectBlind:
         return EngineSelectBlind()
