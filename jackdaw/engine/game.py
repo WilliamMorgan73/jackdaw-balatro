@@ -1235,9 +1235,15 @@ def _handle_buy_card(gs: dict[str, Any], idx: int) -> dict[str, Any]:
         gs.setdefault("deck", []).append(card)
         added_playing_card = True
 
+    # Inflation challenge (buy_from_shop, button_callbacks.lua): every
+    # purchase raises G.GAME.inflation by 1, then set_cost runs on every card.
+    inflation = bool(gs.get("modifiers", {}).get("inflation"))
+    if inflation:
+        gs["inflation"] = gs.get("inflation", 0) + 1
+
     # Astronomer joining the board runs the all-cards set_cost pass
     # (dump card.lua:786-793) — restores couponed owned costs too.
-    if getattr(card, "center_key", "") == "j_astronomer":
+    if inflation or getattr(card, "center_key", "") == "j_astronomer":
         _all_cards_set_cost_pass(gs)
 
     # Fire buying_card joker context
