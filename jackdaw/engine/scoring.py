@@ -902,9 +902,11 @@ def score_hand(
 
     # === Phase 11: Card destruction ===
     cards_destroyed: list[Card] = []
+    # state_events.lua evaluate_play destroy loop: every scoring card is
+    # offered to the jokers (no debuff gate on the card), then every
+    # non-debuffed Glass Card rolls 'glass', even one a joker already
+    # destroyed, so the stream advances exactly as in vanilla.
     for sc in scoring_cards:
-        if sc.debuff:
-            continue
         destroyed = False
         # Joker destroying_card checks (Sixth Sense, etc.)
         for joker in jokers:
@@ -923,7 +925,7 @@ def score_hand(
                 destroyed = True
                 break
         # Glass Card self-shatter: 1 in (1/probabilities_normal * 4) chance
-        if not destroyed and sc.ability.get("name") == "Glass Card":
+        if sc.ability.get("name") == "Glass Card" and not sc.debuff:
             if rng.random("glass") < probabilities_normal / 4:
                 destroyed = True
         if destroyed:
