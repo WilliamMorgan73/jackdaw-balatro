@@ -1032,6 +1032,29 @@ def encode_playing_cards_batch(
     return buf.copy()
 
 
+def encode_pack_cards_batch(cards: list[Card], gs: dict[str, Any]) -> np.ndarray:
+    """Encode the cards of an open booster pack.  Returns ``(N, D_PLAYING_CARD)``.
+
+    Playing cards (Standard packs) are encoded as by
+    :func:`encode_playing_cards_batch`.  Tarot, Planet, Spectral and Joker cards
+    have no rank or suit, so they would read as face-down; they instead set
+    ``0: center_key_id`` (normalized, as for jokers and consumables),
+    ``4: edition``, ``12: position`` and ``14: 1`` (not a playing card).
+    """
+    arr = encode_playing_cards_batch(cards, gs)
+    nck = max(NUM_CENTER_KEYS, 1)
+    for i, card in enumerate(cards):
+        if card.base is not None:
+            continue
+        row = arr[i]
+        row[:] = 0.0
+        row[0] = center_key_id(card.center_key) / nck
+        row[4] = _edition_idx(card.edition) / 4.0
+        row[12] = i / 20.0
+        row[14] = 1.0
+    return arr
+
+
 def encode_jokers_batch(
     jokers: list[Card],
     gs: dict[str, Any] | None = None,
@@ -1100,7 +1123,7 @@ class Observation:
     jokers: np.ndarray  # (N_joker, D_JOKER)
     consumables: np.ndarray  # (N_cons, D_CONSUMABLE)
     shop_cards: np.ndarray  # (N_shop, D_SHOP)
-    pack_cards: np.ndarray  # (N_pack, D_PLAYING_CARD)
+    pack_cards: np.ndarray  # (N_pack, D_PLAYING_CARD); see encode_pack_cards_batch
 
     def to_game_observation(self) -> GameObservation:
         """Convert to a game-agnostic :class:`GameObservation`."""
@@ -1170,7 +1193,7 @@ def encode_observation(gs: dict[str, Any]) -> Observation:
 
     # Pack cards — batch encode
     pack_cards: list[Card] = gs.get("pack_cards", [])
-    pack_arr = encode_playing_cards_batch(pack_cards, gs)
+    pack_arr = encode_pack_cards_batch(pack_cards, gs)
 
     return Observation(
         global_context=global_ctx,
