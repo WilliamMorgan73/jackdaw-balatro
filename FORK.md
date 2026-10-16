@@ -9,12 +9,14 @@ for a dissertation project on automating Balatro's shop phase with deep Q-learni
 | File | What it does |
 |---|---|
 | `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), random shop agent as the baseline. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
+| `scripts/fuzz_engine.py` | Invariant fuzzer: full runs over every deck and stake (mixing `smart_agent`, random legal actions and mask sampling), checking every step for illegal or crashing actions, mask vs `get_legal_actions` disagreements, slot, card-ownership and price invariants, and that cash-out pays exactly the breakdown. `--easy` makes blinds trivial, so runs reach ante 8 and endless mode. Re-run it after merging upstream. |
 | `scripts/verify_shop_rl.py` | Feasibility checks for a shop-only RL wrapper: raw-state keys, shop indexing, env `deepcopy` + RNG determinism, oracle timing, pack types, consumable targeting, joker slots. |
 
 ```bash
 uv run python scripts/train_random_shop.py --episodes 500 --play smart \
     --decks b_red,b_blue --stakes 1 --run-name my_run
 uv run python scripts/verify_shop_rl.py
+uv run python scripts/fuzz_engine.py --games 300 && uv run python scripts/fuzz_engine.py --games 150 --easy --p-smart 0.2
 ```
 
 ### Evaluation on fixed seeds
@@ -56,7 +58,7 @@ git switch main && git merge fix/<name>        # use it here straight away
 ```
 
 Branches on this fork: `fix/rental-breakdown`, `fix/glass-destroy-rng`,
-`fix/inflation-challenge` (merged into `main`); `fix/gym-reward-blind-beaten` and
+`fix/inflation-challenge`, `fix/cerulean-bell-forced-card` (merged into `main`); `fix/gym-reward-blind-beaten` and
 `fix/use-consumables-in-pack` (superseded by upstream `ddc3d68`);
 `test/shop-rl-feasibility` (the history of the scripts above).
 
