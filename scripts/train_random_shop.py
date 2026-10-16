@@ -14,12 +14,22 @@ that were legal), ``rounds.jsonl`` (one line per blind, with the cash-out
 breakdown) and ``shops.jsonl`` (what each shop offered, on entry and after
 rerolls).  Visualise them with balatro-run-analysis.
 
+With ``--eval-every N`` the shop agent is also scored greedily, before
+training and after every N training episodes, on a fixed set of seeds
+(``EVAL_0..K-1``, each with a fixed deck/stake).  These eval episodes go to
+``runs/<run-name>/eval/`` in the same format, plus ``eval_round`` and
+``train_episodes`` columns.  Every run with the same eval settings plays the
+same eval games, so runs can be compared seed by seed.  Eval uses its own env,
+play agent and RNGs, so turning it on doesn't change the training episodes.
+
 Usage::
 
     uv run python scripts/train_random_shop.py --episodes 200
     uv run python scripts/train_random_shop.py --episodes 200 --play smart
     uv run python scripts/train_random_shop.py --play smart \\
         --decks b_red,b_blue,b_black --stakes 1,2 --run-name smart_mixed
+    uv run python scripts/train_random_shop.py --episodes 500 --play smart \\
+        --eval-every 50 --eval-episodes 20
 """
 
 from __future__ import annotations
@@ -120,7 +130,9 @@ def shop_mask(mask: ActionMask) -> np.ndarray:
 
 
 class ShopAgent(Protocol):
-    def act(self, state: np.ndarray, mask: np.ndarray) -> int: ...
+    def act(self, state: np.ndarray, mask: np.ndarray, greedy: bool = False) -> int:
+        """Choose a legal action.  ``greedy`` is set for eval episodes (no exploration)."""
+        ...
 
     def observe(
         self,
@@ -134,13 +146,18 @@ class ShopAgent(Protocol):
 
 
 class RandomShopAgent:
-    """Uniform over legal shop actions: the performance floor."""
+    """Uniform over legal shop actions: the performance floor.
 
-    def __init__(self, rng: random.Random) -> None:
+    Eval episodes draw from ``eval_rng`` so they don't shift the training stream.
+    """
+
+    def __init__(self, rng: random.Random, eval_rng: random.Random | None = None) -> None:
         self.rng = rng
+        self.eval_rng = eval_rng or random.Random()
 
-    def act(self, state: np.ndarray, mask: np.ndarray) -> int:
-        return self.rng.choice(np.flatnonzero(mask).tolist())
+    def act(self, state: np.ndarray, mask: np.ndarray, greedy: bool = False) -> int:
+        rng = self.eval_rng if greedy else self.rng
+        return rng.choice(np.flatnonzero(mask).tolist())
 
     def observe(self, *transition: Any) -> None:
         pass  # nothing to learn
@@ -186,18 +203,12 @@ class SmartPlayAgent:
 
     def act(self, gs: dict[str, Any], mask: ActionMask, env: BalatroEnvironment) -> FactoredAction:
         from jackdaw.cli.smart_agent import smart_agent
-        from jackdaw.engine.actions import PickPackCard
 
-        # get_legal_actions() offers pack picks that pack_pick_block_reason()
-        # rejects (e.g. Wheel of Fortune with no eligible joker); the mask
-        # doesn't, so drop picks the mask disallows.
-        picks = mask.entity_masks.get(AT.PickPackCard)
-        legal = [
-            a
-            for a in env._adapter.get_legal_actions()
-            if not isinstance(a, PickPackCard) or (picks is not None and picks[a.card_index])
-        ]
-        return engine_action_to_factored(smart_agent(gs, legal), gs)
+        return engine_action_to_factored(smart_agent(gs, env._adapter.get_legal_actions()), gs)
+
+
+def make_play_agent(kind: str, rng: random.Random) -> RandomPlayAgent | SmartPlayAgent:
+    return RandomPlayAgent(rng) if kind == "random" else SmartPlayAgent()
 
 
 # ---------------------------------------------------------------------------
@@ -296,12 +307,26 @@ class ShopEnv:
     def gs(self) -> dict[str, Any]:
         return self.env._adapter.raw_state
 
-    def reset(self) -> tuple[np.ndarray, np.ndarray, bool]:
+    def reset(
+        self,
+        seed: str | None = None,
+        episode: int | None = None,
+        deck: str | None = None,
+        stake: int | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, bool]:
+        """Start an episode.  By default the seed is ``<prefix>_<n>`` for the n-th
+        reset and deck/stake are sampled; eval passes all of them explicitly."""
         self.stats: Counter[str] = Counter()
-        self.episode += 1
+        self.episode = self.episode + 1 if episode is None else episode
         self.step_idx = 0
-        obs, mask, info = self.env.reset()
-        self.seed = f"{self.env._seed_prefix}_{self.episode}"  # BalatroEnvironment.reset() scheme
+        if deck is not None:
+            self.env._back_keys = [deck]
+        if stake is not None:
+            self.env._stakes = [stake]
+        # BalatroEnvironment.reset()'s own scheme, passed explicitly so the
+        # logged seed is the one actually played.
+        self.seed = seed or f"{self.env._seed_prefix}_{self.env._episode_count}"
+        obs, mask, info = self.env.reset(seed=self.seed)
         self._obs, self._mask = obs, info["action_mask"]
         done = self._autoplay()
         return self._state(), self._mask17(done), done
@@ -429,11 +454,137 @@ class ShopEnv:
 # ---------------------------------------------------------------------------
 
 
+EPISODE_FIELDS = [
+    "episode",
+    "ante",
+    "won",
+    "return",
+    "shop_steps",
+    "shops_visited",
+    "dollars_spent",
+    "seconds",
+    "seed",
+    "deck",
+    "stake",
+    "final_round",
+    "final_dollars",
+    "final_jokers",
+] + ACTION_NAMES
+EVAL_FIELDS = EPISODE_FIELDS + ["eval_round", "train_episodes"]
+
+
+def run_episode(
+    env: ShopEnv,
+    agent: ShopAgent,
+    *,
+    learn: bool,
+    greedy: bool = False,
+    **reset_kw: Any,
+) -> dict[str, Any]:
+    """Play one episode and return its episodes.csv row.  ``learn`` feeds
+    transitions to ``agent.observe``; eval episodes don't."""
+    t0 = time.perf_counter()
+    s, m, done = env.reset(**reset_kw)
+    ep_return, ep_steps = 0.0, 0
+    info = {"ante": env.env.episode_ante, "won": env.env.episode_won}
+    while not done:
+        a = agent.act(s, m, greedy=greedy)
+        s2, m2, r, done, info = env.step(a)
+        if learn:
+            agent.observe(s, a, r, s2, done, m2)
+        s, m = s2, m2
+        ep_return += r
+        ep_steps += 1
+    return {
+        "episode": env.episode,
+        "ante": info["ante"],
+        "won": int(info["won"]),
+        "return": ep_return,
+        "shop_steps": ep_steps,
+        "shops_visited": env.stats["shops_visited"],
+        "dollars_spent": env.stats["dollars_spent"],
+        "seconds": round(time.perf_counter() - t0, 4),
+        "seed": env.seed,
+        "deck": env.gs["selected_back_key"],
+        "stake": env.gs["stake"],
+        "final_round": env.gs["round"],
+        "final_dollars": env.gs["dollars"],
+        "final_jokers": ";".join(j.center_key for j in env.gs["jokers"]),
+        **{name: env.stats[name] for name in ACTION_NAMES},
+    }
+
+
+def eval_set(args: argparse.Namespace) -> list[tuple[str, str, int]]:
+    """The fixed eval games: (seed, deck, stake), cycling through decks then stakes."""
+    nd = len(args.decks)
+    return [
+        (
+            f"{args.eval_seed_prefix}_{i}",
+            args.decks[i % nd],
+            args.stakes[(i // nd) % len(args.stakes)],
+        )
+        for i in range(args.eval_episodes)
+    ]
+
+
+class Evaluator:
+    """Greedy episodes on the fixed eval set, written to ``<run>/eval/``.
+
+    Uses its own env and play agent, and reseeds the play agent's RNG from each
+    eval seed, so the same eval game is played the same way (apart from the shop
+    agent's choices) in every eval round and every run.
+    """
+
+    def __init__(self, args: argparse.Namespace, out_dir: Path) -> None:
+        self.games = eval_set(args)
+        self.out_dir = out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        self.play_rng = random.Random()
+        self.logger = None if args.no_step_log else RunLogger(out_dir)
+        self.env = ShopEnv(
+            make_play_agent(args.play, self.play_rng),
+            seed_prefix=args.eval_seed_prefix,
+            back_keys=tuple(args.decks),
+            stakes=tuple(args.stakes),
+            logger=self.logger,
+        )
+        self.csv_file = open(out_dir / "episodes.csv", "w", newline="")
+        self.log = csv.DictWriter(self.csv_file, fieldnames=EVAL_FIELDS)
+        self.log.writeheader()
+        self.round = 0
+
+    def run(self, agent: ShopAgent, train_episodes: int) -> list[dict[str, Any]]:
+        rows = []
+        for i, (seed, deck, stake) in enumerate(self.games):
+            self.play_rng.seed(seed)
+            row = run_episode(
+                self.env,
+                agent,
+                learn=False,
+                greedy=True,
+                seed=seed,
+                episode=self.round * len(self.games) + i,
+                deck=deck,
+                stake=stake,
+            )
+            row |= {"eval_round": self.round, "train_episodes": train_episodes}
+            self.log.writerow(row)
+            rows.append(row)
+        self.csv_file.flush()
+        self.round += 1
+        return rows
+
+    def close(self) -> None:
+        self.csv_file.close()
+        if self.logger:
+            self.logger.close()
+
+
 def train(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
     random.seed(args.seed)  # BalatroEnvironment samples back_keys/stakes from global random
-    play_agent = RandomPlayAgent(rng) if args.play == "random" else SmartPlayAgent()
-    shop_agent: ShopAgent = RandomShopAgent(rng)
+    play_agent = make_play_agent(args.play, rng)
+    shop_agent: ShopAgent = RandomShopAgent(rng, eval_rng=random.Random(f"eval_{args.seed}"))
 
     out_dir = Path(args.out_dir) / (args.run_name or f"random_shop_{args.play}_play")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -445,6 +596,7 @@ def train(args: argparse.Namespace) -> None:
         stakes=tuple(args.stakes),
         logger=logger,
     )
+    evaluator = Evaluator(args, out_dir / "eval") if args.eval_every > 0 else None
     write_config(out_dir, args, play_agent, shop_agent)
     writer = None
     try:
@@ -454,61 +606,32 @@ def train(args: argparse.Namespace) -> None:
     except ImportError:
         print("(tensorboard not installed; logging to CSV only - `uv sync --extra train`)")
 
-    fields = [
-        "episode",
-        "ante",
-        "won",
-        "return",
-        "shop_steps",
-        "shops_visited",
-        "dollars_spent",
-        "seconds",
-        "seed",
-        "deck",
-        "stake",
-        "final_round",
-        "final_dollars",
-        "final_jokers",
-    ] + ACTION_NAMES
     csv_file = open(out_dir / "episodes.csv", "w", newline="")
-    log = csv.DictWriter(csv_file, fieldnames=fields)
+    log = csv.DictWriter(csv_file, fieldnames=EPISODE_FIELDS)
     log.writeheader()
+
+    def evaluate(train_episodes: int) -> None:
+        assert evaluator is not None
+        rows = evaluator.run(shop_agent, train_episodes)
+        antes = [r["ante"] for r in rows]
+        wins = sum(r["won"] for r in rows)
+        print(
+            f"eval {evaluator.round - 1:3d} after {train_episodes:5d} train episodes: "
+            f"mean ante {np.mean(antes):.2f}  wins {wins}/{len(rows)}"
+        )
+        if writer:
+            writer.add_scalar("eval/ante", float(np.mean(antes)), train_episodes)
+            writer.add_scalar("eval/win_rate", wins / len(rows), train_episodes)
 
     total_steps = 0
     antes: list[int] = []
     t_start = time.perf_counter()
+    if evaluator:
+        evaluate(0)
     for ep in range(args.episodes):
-        t0 = time.perf_counter()
-        s, m, done = env.reset()
-        ep_return, ep_steps = 0.0, 0
-        info = {"ante": env.env.episode_ante, "won": env.env.episode_won}
-        while not done:
-            a = shop_agent.act(s, m)
-            s2, m2, r, done, info = env.step(a)
-            shop_agent.observe(s, a, r, s2, done, m2)
-            s, m = s2, m2
-            ep_return += r
-            ep_steps += 1
-            total_steps += 1
-
-        antes.append(info["ante"])
-        row = {
-            "episode": ep,
-            "ante": info["ante"],
-            "won": int(info["won"]),
-            "return": ep_return,
-            "shop_steps": ep_steps,
-            "shops_visited": env.stats["shops_visited"],
-            "dollars_spent": env.stats["dollars_spent"],
-            "seconds": round(time.perf_counter() - t0, 4),
-            "seed": env.seed,
-            "deck": env.gs["selected_back_key"],
-            "stake": env.gs["stake"],
-            "final_round": env.gs["round"],
-            "final_dollars": env.gs["dollars"],
-            "final_jokers": ";".join(j.center_key for j in env.gs["jokers"]),
-            **{name: env.stats[name] for name in ACTION_NAMES},
-        }
+        row = run_episode(env, shop_agent, learn=True)
+        total_steps += row["shop_steps"]
+        antes.append(row["ante"])
         log.writerow(row)
         if writer:
             for key in ("ante", "won", "return", "shop_steps", "dollars_spent"):
@@ -519,10 +642,14 @@ def train(args: argparse.Namespace) -> None:
                 f"ep {ep + 1:5d}  steps {total_steps:7d}  "
                 f"mean ante (last {len(recent)}) {np.mean(recent):.2f}  max {max(recent)}"
             )
+        if evaluator and ((ep + 1) % args.eval_every == 0 or ep + 1 == args.episodes):
+            evaluate(ep + 1)
 
     csv_file.close()
     if logger:
         logger.close()
+    if evaluator:
+        evaluator.close()
     if writer:
         writer.close()
     dist = Counter(antes)
@@ -556,7 +683,14 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         # 2: rounds.jsonl ante = ante the blind was played in (v1 logged beaten
         # bosses under the next ante), cash-out breakdown, shops.jsonl
         # 3: steps.jsonl legal (shop action indices legal at each decision)
-        "log_version": 3,
+        # 4: optional eval/ dir (greedy episodes on fixed seeds, with
+        # eval_round and train_episodes columns)
+        "log_version": 4,
+        "eval_set": [
+            {"seed": seed, "deck": deck, "stake": stake} for seed, deck, stake in eval_set(args)
+        ]
+        if args.eval_every > 0
+        else [],
         "started": datetime.now().isoformat(timespec="seconds"),
         "jackdaw_commit": commit or None,
     }
@@ -590,6 +724,14 @@ def main() -> None:
     ap.add_argument("--out-dir", default="runs")
     ap.add_argument("--run-name", default=None, help="default: random_shop_<play>_play")
     ap.add_argument("--no-step-log", action="store_true", help="skip steps.jsonl / rounds.jsonl")
+    ap.add_argument(
+        "--eval-every",
+        type=int,
+        default=0,
+        help="greedy eval on fixed seeds before training and every N train episodes (0 = off)",
+    )
+    ap.add_argument("--eval-episodes", type=int, default=20, help="eval games per eval round")
+    ap.add_argument("--eval-seed-prefix", default="EVAL")
     train(ap.parse_args())
 
 

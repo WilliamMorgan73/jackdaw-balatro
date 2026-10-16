@@ -17,6 +17,20 @@ uv run python scripts/train_random_shop.py --episodes 500 --play smart \
 uv run python scripts/verify_shop_rl.py
 ```
 
+### Evaluation on fixed seeds
+
+`--eval-every N --eval-episodes K [--eval-seed-prefix EVAL]` plays K greedy
+(`act(..., greedy=True)`, no `observe`) episodes before training and after every N
+training episodes. The eval games are always `EVAL_0..K-1`, and game i gets deck
+`decks[i % len(decks)]` and stake `stakes[(i // len(decks)) % len(stakes)]`. They are
+written to `runs/<name>/eval/` (same files as a run, plus `eval_round` and
+`train_episodes` columns; `config.json` lists the `eval_set`). Eval has its own env,
+and its play agent's RNG is reseeded from each eval seed, so:
+
+- turning eval on doesn't change the training episodes, and
+- every run with the same `--decks/--stakes/--eval-*` plays the same eval games, so
+  runs can be compared seed by seed.
+
 ## Keeping up with upstream
 
 ```bash
@@ -38,18 +52,13 @@ gh pr create -R TylerFlar/jackdaw-balatro      # optional: offer it upstream
 git switch main && git merge fix/<name>        # use it here straight away
 ```
 
-Branches on this fork: `fix/gym-reward-blind-beaten`, `fix/use-consumables-in-pack`
-(unmerged), `test/shop-rl-feasibility` (the history of the scripts above).
+Branches on this fork: `fix/rental-breakdown`, `fix/glass-destroy-rng`,
+`fix/inflation-challenge` (merged into `main`); `fix/gym-reward-blind-beaten` and
+`fix/use-consumables-in-pack` (superseded by upstream `ddc3d68`);
+`test/shop-rl-feasibility` (the history of the scripts above).
 
 ## Known issues and gotchas
 
-- **`get_legal_actions()` offers pack picks the executor rejects.**
-  `jackdaw/engine/actions.py` lists every `PickPackCard` (except full-slot jokers) without
-  calling `pack_pick_block_reason()`, which the action mask and `_handle_pick_pack_card`
-  both use. Agents built on engine legal actions (e.g. `smart_agent`) can pick The Fool
-  with nothing to copy or Wheel of Fortune with no eligible joker and hit
-  `IllegalActionError`. The factored `ActionMask` is correct. Both scripts work around it
-  by filtering picks through the mask.
 - **Seeds depend on reset count per env object.** `BalatroEnvironment` seeds are
   `f"{prefix}_{n}"` where `n` counts `reset()` calls on that object; a fresh env per
   episode replays seed `_0`. Reuse one env or pass `reset(seed=...)`.
