@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from jackdaw.engine.rng import PseudoRandom
 
 from jackdaw.engine.jokers import GameSnapshot, on_end_of_round
+from jackdaw.engine.round_lifecycle import _is_rental
 
 # ---------------------------------------------------------------------------
 # RoundEarnings — per-round cash-out descriptor
@@ -51,11 +52,13 @@ class RoundEarnings:
     """Breakdown of money earned (and lost) at end of a round.
 
     All monetary values are in whole dollars.  ``rental_cost`` is a
-    *positive* value representing money lost; it is subtracted in ``total``.
+    *positive* value representing money lost.
 
-    ``total`` is the net dollar change applied by ``ease_dollars``:
+    ``total`` is the dollar change applied at cash-out:
     ``blind_reward + unused_hands_bonus + unused_discards_bonus
-    + joker_dollars + interest − rental_cost``
+    + joker_dollars + interest``, minus ``rental_cost`` only when the rent
+    has not already been charged (standalone use; in the game loop
+    ``process_round_end_cards`` charges it first, as vanilla does).
     """
 
     blind_reward: int = 0
@@ -152,6 +155,7 @@ def calculate_round_earnings(
     rng: PseudoRandom | None = None,
     *,
     joker_dollars: int | None = None,
+    rental_cost: int | None = None,
 ) -> RoundEarnings:
     """Compute end-of-round earnings for a beaten blind.
 
@@ -193,6 +197,10 @@ def calculate_round_earnings(
             ``on_end_of_round`` call in ``_round_won``.  When provided,
             ``on_end_of_round`` is **not** called again, avoiding a
             duplicate RNG consumption that would desync the PRNG state.
+        rental_cost: Rent already charged this round by
+            :func:`~jackdaw.engine.round_lifecycle.process_round_end_cards`.
+            When provided, ``money`` is taken to be post-rent and the rent is
+            only reported (not deducted again from ``money`` or ``total``).
 
     Returns:
         :class:`RoundEarnings` with all components and their net total.
@@ -207,8 +215,11 @@ def calculate_round_earnings(
     # calculate_rental() → ease_dollars(-G.GAME.rental_rate) per rental joker
     # Fires BEFORE evaluate_round; effective_money is used for interest.
     # ------------------------------------------------------------------
-    rental_cost = sum(rental_rate for j in jokers if not j.debuff and j.ability.get("rental"))
-    effective_money = money - rental_cost
+    # calculate_rental has no debuff gate (card.lua:2271).
+    rent_charged = rental_cost is not None
+    if rental_cost is None:
+        rental_cost = sum(rental_rate for j in jokers if _is_rental(j))
+    effective_money = money if rent_charged else money - rental_cost
 
     # ------------------------------------------------------------------
     # Step 2 — Blind reward (state_events.lua:1139)
@@ -281,7 +292,7 @@ def calculate_round_earnings(
         + unused_discards_bonus
         + joker_dollars
         + interest
-        - rental_cost
+        - (0 if rent_charged else rental_cost)
     )
 
     return RoundEarnings(

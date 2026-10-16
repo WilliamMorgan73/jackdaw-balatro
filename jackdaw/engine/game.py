@@ -2012,7 +2012,7 @@ def _joker_end_of_round_effects(gs: dict[str, Any]) -> dict[str, Any]:
                         ante=gs.get("round_resets", {}).get("ante", 1),
                     )
 
-    process_round_end_cards(jokers, gs)
+    eor["rental_cost"] = process_round_end_cards(jokers, gs).rental_cost
     return eor
 
 
@@ -2197,6 +2197,7 @@ def _round_won(gs: dict[str, Any]) -> None:
         game_state=gs,
         rng=rng,
         joker_dollars=eor.get("dollars_earned", 0),
+        rental_cost=eor.get("rental_cost", 0),
     )
     gs["round_earnings"] = earnings
 
