@@ -58,7 +58,8 @@ git switch main && git merge fix/<name>        # use it here straight away
 ```
 
 Branches on this fork: `fix/rental-breakdown`, `fix/glass-destroy-rng`,
-`fix/inflation-challenge`, `fix/cerulean-bell-forced-card` (merged into `main`); `fix/gym-reward-blind-beaten` and
+`fix/inflation-challenge`, `fix/cerulean-bell-forced-card`, `fix/pack-card-encoding`,
+`fix/cerulean-bell-dedupe-actions` (built on the Cerulean branch) (merged into `main`); `fix/gym-reward-blind-beaten` and
 `fix/use-consumables-in-pack` (superseded by upstream `ddc3d68`);
 `test/shop-rl-feasibility` (the history of the scripts above).
 
