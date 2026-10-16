@@ -320,6 +320,7 @@ class ShopEnv:
         """Start an episode.  By default the seed is ``<prefix>_<n>`` for the n-th
         reset and deck/stake are sampled; eval passes all of them explicitly."""
         self.stats: Counter[str] = Counter()
+        self._pending_round: dict[str, Any] | None = None
         self.episode = self.episode + 1 if episode is None else episode
         self.step_idx = 0
         if deck is not None:
@@ -358,7 +359,11 @@ class ShopEnv:
         if a == REROLL and self.gs["phase"] == GamePhase.SHOP:
             self._log_shop("reroll")
 
+        opened_pack = self.gs["phase"] == GamePhase.PACK_OPENING
         done = term or trunc or self._autoplay()
+        # Picks from a pack (resolved by the play agent) can change money, e.g. The
+        # Hermit or selling to make room; record the money once the pack closes.
+        dollars_after_pack = self.gs["dollars"] if opened_pack and not done else None
         reward = r_ante(prev_ante, self.env.episode_ante)
         if self.logger:
             self.logger.log_step(
@@ -367,6 +372,7 @@ class ShopEnv:
                 **context,
                 dollars_before=dollars_before,
                 dollars_after=dollars_after,
+                dollars_after_pack=dollars_after_pack,
                 action=a,
                 action_name=ACTION_NAMES[a],
                 item_key=item_key,
@@ -384,17 +390,22 @@ class ShopEnv:
             if self.gs["phase"] == GamePhase.GAME_OVER:
                 return True
             was_playing = self.gs["phase"] == GamePhase.SELECTING_HAND
-            cashed_out |= self.gs["phase"] == GamePhase.ROUND_EVAL
+            cashing_out = self.gs["phase"] == GamePhase.ROUND_EVAL
+            cashed_out |= cashing_out
             ante_played = self.gs["round_resets"]["ante"]
+            dollars_before = self.gs["dollars"]
             a = self.play_agent.act(self.gs, self._mask, self.env)
             obs, term, trunc, mask, info = self.env.step(a)
             self._obs, self._mask = obs, info["action_mask"]
             if was_playing and self.gs["phase"] != GamePhase.SELECTING_HAND:
                 self._log_round(ante_played)
+            if cashing_out and self.gs["phase"] != GamePhase.ROUND_EVAL:
+                self._flush_round(paid=self.gs["dollars"] - dollars_before)
             if term or trunc:
+                self._flush_round()
                 return True
-        self.stats["shops_visited"] += self.gs["phase"] == GamePhase.SHOP
         if cashed_out:  # a new shop, not a return from a pack opened in the shop
+            self.stats["shops_visited"] += 1
             self._log_shop("enter")
         return False
 
@@ -404,7 +415,8 @@ class ShopEnv:
         ``ante`` is the ante the blind was played in: beating a boss advances
         ``round_resets.ante`` before we get here.  A beaten blind is in
         ROUND_EVAL with ``round_earnings`` (the cash-out about to be paid); a
-        lost one has no earnings.
+        lost one has no earnings.  A beaten blind's row is written at cash-out
+        (``_flush_round``), once the money actually paid is known.
         """
         gs = self.gs
         blind = gs.get("blind")
@@ -412,7 +424,7 @@ class ShopEnv:
             return
         beaten = gs["phase"] == GamePhase.ROUND_EVAL
         earnings = gs.get("round_earnings") if beaten else None
-        self.logger.log_round(
+        row = dict(
             episode=self.episode,
             ante=ante,
             round=gs["round"],
@@ -423,7 +435,23 @@ class ShopEnv:
             dollars_at_end=gs["dollars"],
             interest_cap=gs.get("interest_cap", 25),
             **{col: getattr(earnings, attr, None) for col, attr in EARNINGS.items()},
+            earn_tags=None,
         )
+        if earnings is None:
+            self.logger.log_round(**row)
+        else:
+            self._pending_round = row
+
+    def _flush_round(self, paid: int | None = None) -> None:
+        """Write the beaten blind's row.  ``paid`` is the money the cash-out actually
+        paid: anything beyond the breakdown's total came from tags (Investment pays
+        $25 at cash-out after a boss), logged as ``earn_tags``."""
+        row, self._pending_round = self._pending_round, None
+        if row is None or not self.logger:
+            return
+        if paid is not None and row["earn_total"] is not None:
+            row["earn_tags"] = paid - row["earn_total"]
+        self.logger.log_round(**row)
 
     def _log_shop(self, reason: str) -> None:
         """Record what the shop offers right now, and at what price."""
@@ -688,7 +716,11 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         # 3: steps.jsonl legal (shop action indices legal at each decision)
         # 4: optional eval/ dir (greedy episodes on fixed seeds, with
         # eval_round and train_episodes columns)
-        "log_version": 4,
+        # 5: rounds.jsonl earn_tags (cash-out money from tags, e.g. Investment);
+        # the engine reports rent in earn_rent (it was always 0 before);
+        # steps.jsonl dollars_after_pack; shops_visited no longer counts
+        # returns from a pack as a new shop
+        "log_version": 5,
         "eval_set": [
             {"seed": seed, "deck": deck, "stake": stake} for seed, deck, stake in eval_set(args)
         ]
