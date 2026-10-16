@@ -30,6 +30,9 @@ Usage::
         --decks b_red,b_blue,b_black --stakes 1,2 --run-name smart_mixed
     uv run python scripts/train_random_shop.py --episodes 500 --play smart \\
         --eval-every 50 --eval-episodes 20
+    # one config, several training seeds, analysed as one group (repeat with --seed 1, 2, ...)
+    uv run python scripts/train_random_shop.py --play smart --eval-every 50 \\
+        --seed 0 --group random_smart --run-name random_smart_s0
 """
 
 from __future__ import annotations
@@ -723,6 +726,11 @@ def main() -> None:
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out-dir", default="runs")
     ap.add_argument("--run-name", default=None, help="default: random_shop_<play>_play")
+    ap.add_argument(
+        "--group",
+        default=None,
+        help="runs sharing a group (same config, different --seed) are aggregated across seeds",
+    )
     ap.add_argument("--no-step-log", action="store_true", help="skip steps.jsonl / rounds.jsonl")
     ap.add_argument(
         "--eval-every",

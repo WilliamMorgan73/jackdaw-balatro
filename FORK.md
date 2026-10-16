@@ -31,6 +31,9 @@ and its play agent's RNG is reseeded from each eval seed, so:
 - every run with the same `--decks/--stakes/--eval-*` plays the same eval games, so
   runs can be compared seed by seed.
 
+`--group <name>` (saved in `config.json`) marks runs of one config with different
+`--seed`s. The dashboard can average a group's runs and give CIs across seeds.
+
 ## Keeping up with upstream
 
 ```bash
