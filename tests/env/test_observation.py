@@ -516,3 +516,52 @@ class TestEndlessOverflowEncoding:
             gs["chips"] = chips
             obs = encode_observation(gs)
             assert np.isfinite(obs.global_context).all(), f"chips={chips}"
+
+
+# ---------------------------------------------------------------------------
+# Pack cards
+# ---------------------------------------------------------------------------
+
+
+class TestPackCardEncoding:
+    """Arcana / Celestial / Spectral / Buffoon pack cards have no rank or suit;
+    they must not encode as blank face-down cards."""
+
+    def _pack_gs(self, keys: list[str]):
+        from jackdaw.engine.card import Card
+
+        adapter = _make_adapter()
+        gs = adapter.raw_state
+        cards = []
+        for key in keys:
+            card = Card()
+            card.set_ability(key)
+            cards.append(card)
+        ace = Card()
+        ace.set_base("H_A", "Hearts", "Ace")
+        ace.set_ability("c_base")
+        gs["pack_cards"] = [*cards, ace]
+        return gs
+
+    def test_non_playing_cards_are_identified(self):
+        keys = ["c_fool", "c_mercury", "c_ankh", "j_joker"]
+        obs = encode_observation(self._pack_gs(keys))
+        assert obs.pack_cards.shape == (len(keys) + 1, D_PLAYING_CARD)
+        for i, key in enumerate(keys):
+            row = obs.pack_cards[i]
+            assert row[7] == 0.0  # not face-down
+            assert row[14] == 1.0  # not a playing card
+            assert abs(row[0] - _CENTER_KEY_TO_ID[key] / NUM_CENTER_KEYS) < 1e-6
+            assert abs(row[12] - i / 20.0) < 1e-6
+        ids = {float(obs.pack_cards[i][0]) for i in range(len(keys))}
+        assert len(ids) == len(keys)  # each card distinguishable
+
+    def test_playing_cards_unchanged(self):
+        gs = self._pack_gs(["c_fool"])
+        obs = encode_observation(gs)
+        ace = obs.pack_cards[1]
+        assert ace[14] == 0.0
+        assert abs(ace[0] - 1.0) < 1e-6  # Ace rank 14/14
+        np.testing.assert_array_equal(
+            ace[:12], encode_playing_card(gs["pack_cards"][1], 1, gs)[:12]
+        )
