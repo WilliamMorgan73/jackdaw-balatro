@@ -63,6 +63,12 @@ Branches on this fork: `fix/rental-breakdown`, `fix/glass-destroy-rng`,
 `fix/use-consumables-in-pack` (superseded by upstream `ddc3d68`);
 `test/shop-rl-feasibility` (the history of the scripts above).
 
+Fixes for the fork's issues #1–#7, one PR each to `main`. The env fixes are branched from
+upstream: `fix/env-own-rng` (#5), `fix/aura-target` (#4, built on `fix/env-own-rng`) and
+`fix/gym-obs-caps` (#3). The harness ones are fork-only: `fix/r-ante-max` (#1, #7; log_version 6,
+built on `fix/env-own-rng`), `fix/sell-item-cost` (#6, built on `fix/r-ante-max`) and
+`docs/random-play-warning` (#2).
+
 ## Known issues and gotchas
 
 - **Seeds depend on reset count per env object.** `BalatroEnvironment` seeds are
