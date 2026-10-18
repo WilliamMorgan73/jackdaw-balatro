@@ -181,6 +181,7 @@ class BalatroGymnasiumEnv(gymnasium.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._rng = np.random.default_rng(seed)
+            self._inner.reseed(seed)  # same seed, same deck/stake
 
         kwargs: dict[str, Any] = {}
         if seed is not None:

@@ -91,6 +91,17 @@ class TestRandomAgent:
         assert gs["_actions_taken"] > 0
         assert gs["_done"] or gs["_won"]
 
+    def test_own_rng_is_reproducible(self):
+        """With its own rng, RandomAgent ignores (and doesn't advance) global random."""
+        import random
+
+        def play(global_seed: int) -> tuple:
+            random.seed(global_seed)
+            gs = _run_agent_episode(RandomAgent(random.Random(1)), seed="RANDOM_RNG")
+            return gs["_actions_taken"], gs["round"], gs["dollars"]
+
+        assert play(0) == play(1)
+
     def test_multiple_seeds(self):
         """RandomAgent completes multiple episodes with different seeds."""
         agent = RandomAgent()

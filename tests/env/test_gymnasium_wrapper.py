@@ -292,3 +292,27 @@ class TestRewardFn:
         # beat 8 blinds — two full antes plus two blinds of ante 3.
         assert info["balatro/rounds_beaten"] == 8
         assert info["balatro/ante_reached"] == 3
+
+
+class TestSeededReset:
+    def test_same_seed_same_deck_and_stake(self) -> None:
+        """reset(seed=) also seeds the deck/stake choice (it used global random)."""
+        import random
+
+        def picks(env: BalatroGymnasiumEnv) -> list[tuple[str, int]]:
+            out = []
+            for s in range(6):
+                random.seed(s * 7)  # must not matter
+                env.reset(seed=s)
+                gs = env._inner._adapter.raw_state
+                out.append((gs["selected_back_key"], gs["stake"]))
+            return out
+
+        def make() -> BalatroGymnasiumEnv:
+            return BalatroGymnasiumEnv(
+                DirectAdapter, back_keys=["b_red", "b_blue", "b_black"], stakes=[1, 2, 3, 4]
+            )
+
+        a = picks(make())
+        assert picks(make()) == a
+        assert len(set(a)) > 1

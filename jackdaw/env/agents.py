@@ -45,7 +45,13 @@ class RandomAgent:
 
     Samples a legal action type, then fills in entity/card targets
     as needed.  Always produces valid :class:`FactoredAction` instances.
+
+    ``rng`` is the ``random.Random`` it samples from (default: the global
+    ``random`` module, as before).
     """
+
+    def __init__(self, rng: _random.Random | None = None) -> None:
+        self._rng = rng or _random
 
     def reset(self) -> None:
         pass
@@ -56,7 +62,7 @@ class RandomAgent:
         if len(legal_types) == 0:
             return FactoredAction(action_type=ActionType.SelectBlind)
 
-        at = int(_random.choice(legal_types))
+        at = int(self._rng.choice(legal_types))
 
         entity_target: int | None = None
         card_target: tuple[int, ...] | None = None
@@ -66,15 +72,15 @@ class RandomAgent:
             mask = action_mask.entity_masks[at]
             legal_entities = np.nonzero(mask)[0]
             if len(legal_entities) > 0:
-                entity_target = int(_random.choice(legal_entities))
+                entity_target = int(self._rng.choice(legal_entities))
 
         # Card target for PlayHand, Discard
         if at in (ActionType.PlayHand, ActionType.Discard):
             legal_cards = np.nonzero(action_mask.card_mask)[0]
             if len(legal_cards) > 0:
                 n = min(len(legal_cards), action_mask.max_card_select)
-                count = _random.randint(action_mask.min_card_select, n)
-                selected = sorted(_random.sample(list(legal_cards), count))
+                count = self._rng.randint(action_mask.min_card_select, n)
+                selected = sorted(self._rng.sample(list(legal_cards), count))
                 card_target = tuple(int(i) for i in selected)
 
         # Card target for a targeting Tarot/Spectral, used from the tray or
@@ -95,8 +101,8 @@ class RandomAgent:
                     legal_cards = np.nonzero(action_mask.card_mask)[0]
                     if len(legal_cards) >= min_cards:
                         n = min(len(legal_cards), max_cards)
-                        count = _random.randint(min_cards, n)
-                        selected = sorted(_random.sample(list(legal_cards), count))
+                        count = self._rng.randint(min_cards, n)
+                        selected = sorted(self._rng.sample(list(legal_cards), count))
                         card_target = tuple(int(i) for i in selected)
 
         return FactoredAction(
