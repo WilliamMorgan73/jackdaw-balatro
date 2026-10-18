@@ -4,9 +4,12 @@ The shop agent acts in a 17-action space (5 buy + 6 sell joker + 2 sell
 consumable + 2 use consumable + reroll + skip).  Every other phase (blind
 select, play/discard, cash out, pack opening) is handled by the play agent.
 
-Random agents don't learn: this is the training loop's plumbing plus the
-random baseline.  A learning shop agent (e.g. a Dueling DQN) implements the
-same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
+Random agents don't learn: this is the training loop's plumbing plus the random
+baseline.  Use ``--play smart`` for shop experiments: the random play agent
+almost never beats the first blind, so with ``--play random`` the shop is
+hardly ever reached (0.05 shop decisions per episode, against ~7 with smart).
+A learning shop agent (e.g. a Dueling DQN) implements the same ``act`` /
+``observe`` interface and drops in for ``RandomShopAgent``.
 
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
 row per episode), ``steps.jsonl`` (one line per shop decision, with the actions
@@ -612,6 +615,11 @@ class Evaluator:
 
 
 def train(args: argparse.Namespace) -> None:
+    if args.play == "random":
+        print(
+            "warning: --play random almost never beats a blind, so the shop is hardly"
+            " ever reached; use --play smart for shop experiments"
+        )
     rng = random.Random(args.seed)
     random.seed(args.seed)  # BalatroEnvironment samples back_keys/stakes from global random
     play_agent = make_play_agent(args.play, rng)
@@ -739,7 +747,7 @@ def main() -> None:
         "--play",
         choices=["random", "smart"],
         default="random",
-        help="non-shop policy: random, or Jackdaw's greedy smart_agent",
+        help="non-shop policy: random (rarely reaches a shop), or Jackdaw's greedy smart_agent",
     )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seed-prefix", default="TRAIN")

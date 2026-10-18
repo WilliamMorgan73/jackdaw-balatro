@@ -8,7 +8,7 @@ for a dissertation project on automating Balatro's shop phase with deep Q-learni
 
 | File | What it does |
 |---|---|
-| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), random shop agent as the baseline. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
+| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), random shop agent as the baseline. Use `--play smart` for shop experiments: `--play random` almost never beats the first blind, so it hardly ever reaches a shop. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
 | `scripts/fuzz_engine.py` | Invariant fuzzer: full runs over every deck and stake (mixing `smart_agent`, random legal actions and mask sampling), checking every step for illegal or crashing actions, mask vs `get_legal_actions` disagreements, slot, card-ownership and price invariants, and that cash-out pays exactly the breakdown. `--easy` makes blinds trivial, so runs reach ante 8 and endless mode. Re-run it after merging upstream. |
 | `scripts/verify_shop_rl.py` | Feasibility checks for a shop-only RL wrapper: raw-state keys, shop indexing, env `deepcopy` + RNG determinism, oracle timing, pack types, consumable targeting, joker slots. |
 
