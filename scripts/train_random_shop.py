@@ -11,10 +11,11 @@ same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
 row per episode; ``max_ante`` is the highest ante a blind was played in, so a
 win is 8 and a Hieroglyph/Petroglyph setback doesn't lower it, while ``ante``
-is the ante the run ended on), ``steps.jsonl`` (one line per shop decision, with the actions
-that were legal), ``rounds.jsonl`` (one line per blind, with the cash-out
-breakdown) and ``shops.jsonl`` (what each shop offered, on entry and after
-rerolls).  Visualise them with balatro-run-analysis.
+is the ante the run ended on), ``steps.jsonl`` (one line per shop decision,
+with the actions that were legal and ``item_cost``: a buy's price, a sell's
+sale value), ``rounds.jsonl`` (one line per blind, with the cash-out breakdown)
+and ``shops.jsonl`` (what each shop offered, on entry and after rerolls).
+Visualise them with balatro-run-analysis.
 
 With ``--eval-every N`` the shop agent is also scored greedily, before
 training and after every N training episodes, on a fixed set of seeds
@@ -229,7 +230,10 @@ def r_ante(prev_ante: int, curr_ante: int, alpha: float = 1.0) -> float:
 
 
 def shop_item_key(gs: dict[str, Any], a: int) -> tuple[str | None, int | None]:
-    """(center_key, cost) of the item shop action ``a`` targets, read before stepping."""
+    """(center_key, cost) of the item shop action ``a`` targets, read before stepping.
+
+    ``cost`` is what the action moves: the price for a buy, what the card sells
+    for (``sell_cost``) for a sell, and the card's price for a use."""
     if a in BUY_CARD:
         items, slot = gs.get("shop_cards", []), a - BUY_CARD[0]
     elif a in BUY_PACK:
@@ -246,7 +250,8 @@ def shop_item_key(gs: dict[str, Any], a: int) -> tuple[str | None, int | None]:
         return None, None
     if slot >= len(items):
         return None, None
-    return items[slot].center_key, items[slot].cost
+    item = items[slot]
+    return item.center_key, item.sell_cost if a in SELL_JOKER or a in SELL_CONS else item.cost
 
 
 class RunLogger:
@@ -734,7 +739,8 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         # returns from a pack as a new shop
         # 6: episodes.csv max_ante (highest ante a blind was played in: 8 for a
         # win, not lowered by Hieroglyph/Petroglyph); r_ante pays only for a new
-        # highest ante; deck/stake drawn from the env's own RNG (--seed)
+        # highest ante; deck/stake drawn from the env's own RNG (--seed);
+        # steps.jsonl item_cost of a sell is what it sells for (was its price)
         "log_version": 6,
         "eval_set": [
             {"seed": seed, "deck": deck, "stake": stake} for seed, deck, stake in eval_set(args)
