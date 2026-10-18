@@ -40,6 +40,19 @@ _SPEC = balatro_game_spec()
 _ENTITY_INFO: list[tuple[str, int, int]] = [
     (et.name, et.max_count, et.feature_dim) for et in _SPEC.entity_types
 ]
+# How many of each entity the observation holds; actions on the rest are dropped
+_CAPS: dict[str, int] = {name: max_count for name, max_count, _ in _ENTITY_INFO}
+# Entity-target action types -> the observed entity list their index points into
+_TARGET_ENTITY: dict[int, str] = {
+    ActionType.SellJoker: "joker",
+    ActionType.SwapJokersLeft: "joker",
+    ActionType.SwapJokersRight: "joker",
+    ActionType.SellConsumable: "consumable",
+    ActionType.UseConsumable: "consumable",
+    ActionType.PickPackCard: "pack_card",
+    ActionType.SwapHandLeft: "hand_card",
+    ActionType.SwapHandRight: "hand_card",
+}
 # Action types that take no targets at all
 _SIMPLE_TYPES: frozenset[int] = frozenset(
     i
@@ -72,6 +85,29 @@ def _subsample(items: list[Any], budget: int, rng: np.random.Generator) -> list[
         return items
     indices = rng.choice(len(items), size=budget, replace=False)
     return [items[i] for i in sorted(indices)]
+
+
+def _targets_observed(fa: FactoredAction, gs: dict[str, Any]) -> bool:
+    """True if every entity *fa* targets is in the observation (within its cap).
+
+    Hands, jokers and consumables can outgrow the caps (Juggler, Negative
+    jokers, Crystal Ball...); an agent shouldn't pick a card it can't see.
+    """
+    if fa.card_target and max(fa.card_target) >= _CAPS["hand_card"]:
+        return False
+    e = fa.entity_target
+    if e is None:
+        return True
+    t = fa.action_type
+    if t in _TARGET_ENTITY:
+        return e < _CAPS[_TARGET_ENTITY[t]]
+    # Shop items are observed as shop_cards + shop_vouchers + shop_boosters
+    offset = {
+        ActionType.BuyCard: 0,
+        ActionType.RedeemVoucher: len(gs.get("shop_cards", [])),
+        ActionType.OpenBooster: len(gs.get("shop_cards", [])) + len(gs.get("shop_vouchers", [])),
+    }.get(t)
+    return offset is None or offset + e < _CAPS["shop_item"]
 
 
 def _card_combos(
@@ -310,6 +346,10 @@ class BalatroGymnasiumEnv(gymnasium.Env):
                                 actions.append(
                                     FactoredAction(action_type=t, entity_target=e_idx_int)
                                 )
+
+        raw_state = info.get("raw_state")
+        if raw_state is not None:
+            actions = [fa for fa in actions if _targets_observed(fa, raw_state)]
 
         # Subsample to budget if needed
         if len(actions) > MAX_ACTIONS:
