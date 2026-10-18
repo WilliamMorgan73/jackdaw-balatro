@@ -287,6 +287,8 @@ class BalatroGymnasiumEnv(gymnasium.Env):
 
             # --- Entity + optional cards (UseConsumable / PickPackCard) ---
             elif t in _TARGETED_ENTITY_SOURCES:
+                from jackdaw.env.action_space import legal_target_selections
+
                 if t in mask.entity_masks:
                     legal_entities = np.nonzero(mask.entity_masks[t])[0]
                     source = info.get("raw_state", {}).get(_TARGETED_ENTITY_SOURCES[t], [])
@@ -298,6 +300,9 @@ class BalatroGymnasiumEnv(gymnasium.Env):
                             if needs:
                                 legal_cards = np.nonzero(mask.card_mask)[0]
                                 combos = _card_combos(legal_cards, min_cards, max_cards)
+                                combos = legal_target_selections(
+                                    card, info.get("raw_state", {}), combos
+                                )
                                 combos = _subsample(combos, CARD_COMBO_BUDGET, self._rng)
                                 for combo in combos:
                                     actions.append(
