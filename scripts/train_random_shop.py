@@ -1,12 +1,15 @@
-"""Shop-only training harness with a random play agent and a random shop agent.
+"""Shop-only training harness: a play agent for every non-shop phase and a random
+or tabular Q-learning shop agent.
 
 The shop agent acts in a 17-action space (5 buy + 6 sell joker + 2 sell
 consumable + 2 use consumable + reroll + skip).  Every other phase (blind
 select, play/discard, cash out, pack opening) is handled by the play agent.
 
-Random agents don't learn: this is the training loop's plumbing plus the
-random baseline.  A learning shop agent (e.g. a Dueling DQN) implements the
-same ``act`` / ``observe`` interface and drops in for ``RandomShopAgent``.
+``--shop random`` (the default) is the baseline: it doesn't learn.
+``--shop qlearn`` is a tabular Q-learning agent over a small discrete shop state
+(``tabular_state``), explained in ``docs/q-learning-shop-agent.md``.  Other
+learning agents (e.g. a Dueling DQN) implement the same ``act`` / ``observe``
+interface and drop in the same way.
 
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
 row per episode), ``steps.jsonl`` (one line per shop decision, with the actions
@@ -30,6 +33,8 @@ Usage::
         --decks b_red,b_blue,b_black --stakes 1,2 --run-name smart_mixed
     uv run python scripts/train_random_shop.py --episodes 500 --play smart \\
         --eval-every 50 --eval-episodes 20
+    uv run python scripts/train_random_shop.py --shop qlearn --play smart \\
+        --episodes 1000 --eval-every 100 --eval-episodes 20
     # one config, several training seeds, analysed as one group (repeat with --seed 1, 2, ...)
     uv run python scripts/train_random_shop.py --play smart --eval-every 50 \\
         --seed 0 --group random_smart --run-name random_smart_s0
@@ -166,6 +171,138 @@ class RandomShopAgent:
         pass  # nothing to learn
 
 
+def tabular_state(gs: dict[str, Any], mask17: np.ndarray) -> np.ndarray:
+    """Small discrete shop state for tabular Q-learning (at most 4,608 states):
+
+    ante (1-8), money bracket ($5 steps, the interest steps: 0-4 .. 25+ -> 0-5),
+    joker count (0-5), and whether buy_card_0, buy_card_1, either pack and the
+    voucher are legal.  Legal means in stock and affordable, so the last four
+    bits also tell the agent what it can afford.
+    """
+    return np.array(
+        [
+            min(max(gs["round_resets"]["ante"], 1), 8),
+            min(max(gs["dollars"], 0) // 5, 5),
+            min(len(gs["jokers"]), 5),
+            mask17[BUY_CARD[0]],
+            mask17[BUY_CARD[1]],
+            mask17[BUY_PACK[0]] or mask17[BUY_PACK[1]],
+            mask17[BUY_VOUCHER],
+        ],
+        dtype=np.int64,
+    )
+
+
+class QLearningShopAgent:
+    """Tabular Q-learning over ``tabular_state``.
+
+    ``act`` is epsilon-greedy over the legal actions (ties broken at random:
+    the table starts at zero).  ``observe`` applies the one-step update
+    ``Q[s][a] += alpha * (r + gamma * max over legal a' of Q[s'][a'] - Q[s][a])``,
+    with no bootstrap from a terminal state.  Epsilon falls linearly from
+    ``eps_start`` to ``eps_end`` over ``eps_decay_episodes`` training episodes.
+    Eval (``greedy=True``) never explores and draws ties from ``eval_rng``.
+    """
+
+    def __init__(
+        self,
+        rng: random.Random,
+        eval_rng: random.Random | None = None,
+        *,
+        alpha: float = 0.1,
+        gamma: float = 0.95,
+        eps_start: float = 1.0,
+        eps_end: float = 0.05,
+        eps_decay_episodes: int = 1000,
+    ) -> None:
+        self.rng = rng
+        self.eval_rng = eval_rng or random.Random()
+        self.alpha, self.gamma = alpha, gamma
+        self.eps_start, self.eps_end = eps_start, eps_end
+        self.eps_decay_episodes = max(eps_decay_episodes, 1)
+        self.q: dict[tuple[int, ...], np.ndarray] = {}
+        self.visits: Counter[tuple[int, ...]] = Counter()
+        self.episodes = 0  # training episodes finished
+
+    @property
+    def params(self) -> dict[str, float]:
+        return {
+            "alpha": self.alpha,
+            "gamma": self.gamma,
+            "eps_start": self.eps_start,
+            "eps_end": self.eps_end,
+            "eps_decay_episodes": self.eps_decay_episodes,
+        }
+
+    @property
+    def epsilon(self) -> float:
+        frac = min(self.episodes / self.eps_decay_episodes, 1.0)
+        return self.eps_start + frac * (self.eps_end - self.eps_start)
+
+    def values(self, state: np.ndarray) -> np.ndarray:
+        """Q-values of ``state`` (zeros if never updated; doesn't grow the table)."""
+        return self.q.get(tuple(state.tolist()), np.zeros(N_ACTIONS))
+
+    def act(self, state: np.ndarray, mask: np.ndarray, greedy: bool = False) -> int:
+        legal = np.flatnonzero(mask)
+        rng = self.eval_rng if greedy else self.rng
+        if not greedy and rng.random() < self.epsilon:
+            return int(rng.choice(legal.tolist()))
+        q = self.values(state)[legal]
+        return int(rng.choice(legal[q == q.max()].tolist()))
+
+    def observe(
+        self,
+        state: np.ndarray,
+        action: int,
+        reward: float,
+        next_state: np.ndarray,
+        done: bool,
+        next_mask: np.ndarray,
+    ) -> None:
+        key = tuple(state.tolist())
+        q = self.q.setdefault(key, np.zeros(N_ACTIONS))
+        self.visits[key] += 1
+        target = reward
+        if not done and next_mask.any():
+            target += self.gamma * self.values(next_state)[next_mask].max()
+        q[action] += self.alpha * (target - q[action])
+        if done:
+            self.episodes += 1
+
+    def save(self, path: Path) -> None:
+        """The learned table: one entry per visited state, with its visit count."""
+        states = [
+            {"state": list(key), "visits": self.visits[key], "q": [round(v, 6) for v in q]}
+            for key, q in sorted(self.q.items())
+        ]
+        table = {"params": self.params, "action_names": ACTION_NAMES, "states": states}
+        path.write_text(json.dumps(table, indent=1))
+
+
+def make_shop_agent(
+    args: argparse.Namespace, rng: random.Random
+) -> RandomShopAgent | QLearningShopAgent:
+    eval_rng = random.Random(f"eval_{args.seed}")
+    if args.shop == "qlearn":
+        return QLearningShopAgent(
+            rng,
+            eval_rng,
+            alpha=args.alpha,
+            gamma=args.gamma,
+            eps_start=args.eps_start,
+            eps_end=args.eps_end,
+            eps_decay_episodes=round(args.eps_decay * args.episodes),
+        )
+    return RandomShopAgent(rng, eval_rng=eval_rng)
+
+
+def state_kind(args: argparse.Namespace) -> str:
+    """What the shop agent sees: ``tabular_state`` for Q-learning, else Jackdaw's
+    global context vector."""
+    return "tabular" if args.shop == "qlearn" else "global"
+
+
 class RandomPlayAgent:
     """Handles every non-shop phase at random.
 
@@ -286,8 +423,9 @@ EARNINGS = {
 class ShopEnv:
     """Exposes only shop decisions; the play agent drives everything else.
 
-    State is Jackdaw's 235-dim ``global_context`` for now; swap in the matrix
-    or summary encoder later.  Reward is R_ante only (no oracle term yet).
+    State is Jackdaw's ``global_context`` vector (``state="global"``) or the
+    small discrete ``tabular_state`` (``state="tabular"``).  Reward is R_ante
+    only (no oracle term yet).
     """
 
     def __init__(
@@ -297,7 +435,9 @@ class ShopEnv:
         back_keys: tuple[str, ...] = ("b_red",),
         stakes: tuple[int, ...] = (1,),
         logger: RunLogger | None = None,
+        state: str = "global",
     ) -> None:
+        self.state = state
         self.env = BalatroEnvironment(
             adapter_factory=DirectAdapter,
             seed_prefix=seed_prefix,
@@ -476,6 +616,8 @@ class ShopEnv:
         )
 
     def _state(self) -> np.ndarray:
+        if self.state == "tabular":
+            return tabular_state(self.gs, shop_mask(self._mask))
         return self._obs.global_context
 
     def _mask17(self, done: bool) -> np.ndarray:
@@ -580,6 +722,7 @@ class Evaluator:
             back_keys=tuple(args.decks),
             stakes=tuple(args.stakes),
             logger=self.logger,
+            state=state_kind(args),
         )
         self.csv_file = open(out_dir / "episodes.csv", "w", newline="")
         self.log = csv.DictWriter(self.csv_file, fieldnames=EVAL_FIELDS)
@@ -618,9 +761,9 @@ def train(args: argparse.Namespace) -> None:
     rng = random.Random(args.seed)
     random.seed(args.seed)  # BalatroEnvironment samples back_keys/stakes from global random
     play_agent = make_play_agent(args.play, rng)
-    shop_agent: ShopAgent = RandomShopAgent(rng, eval_rng=random.Random(f"eval_{args.seed}"))
+    shop_agent = make_shop_agent(args, rng)
 
-    out_dir = Path(args.out_dir) / (args.run_name or f"random_shop_{args.play}_play")
+    out_dir = Path(args.out_dir) / (args.run_name or f"{args.shop}_shop_{args.play}_play")
     out_dir.mkdir(parents=True, exist_ok=True)
     logger = None if args.no_step_log else RunLogger(out_dir)
     env = ShopEnv(
@@ -629,6 +772,7 @@ def train(args: argparse.Namespace) -> None:
         back_keys=tuple(args.decks),
         stakes=tuple(args.stakes),
         logger=logger,
+        state=state_kind(args),
     )
     evaluator = Evaluator(args, out_dir / "eval") if args.eval_every > 0 else None
     write_config(out_dir, args, play_agent, shop_agent)
@@ -697,6 +841,12 @@ def train(args: argparse.Namespace) -> None:
         f"mean ante {np.mean(antes):.2f}; ante reached: "
         + ", ".join(f"{k}: {dist[k]}" for k in sorted(dist))
     )
+    if isinstance(shop_agent, QLearningShopAgent):
+        shop_agent.save(out_dir / "q_table.json")
+        print(
+            f"Q-table: {len(shop_agent.q)} states visited, final epsilon "
+            f"{shop_agent.epsilon:.3f} -> {out_dir}/q_table.json"
+        )
     print(f"logs: {out_dir}/")
 
 
@@ -714,6 +864,7 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         **vars(args),
         "play_agent": type(play_agent).__name__,
         "shop_agent": type(shop_agent).__name__,
+        "agent_params": getattr(shop_agent, "params", {}),
         "n_actions": N_ACTIONS,
         "action_names": ACTION_NAMES,
         # 2: rounds.jsonl ante = ante the blind was played in (v1 logged beaten
@@ -746,6 +897,22 @@ def main() -> None:
         default="random",
         help="non-shop policy: random, or Jackdaw's greedy smart_agent",
     )
+    ap.add_argument(
+        "--shop",
+        choices=["random", "qlearn"],
+        default="random",
+        help="shop policy: random baseline, or tabular Q-learning",
+    )
+    ap.add_argument("--alpha", type=float, default=0.1, help="qlearn: learning rate")
+    ap.add_argument("--gamma", type=float, default=0.95, help="qlearn: discount factor")
+    ap.add_argument("--eps-start", type=float, default=1.0, help="qlearn: initial epsilon")
+    ap.add_argument("--eps-end", type=float, default=0.05, help="qlearn: final epsilon")
+    ap.add_argument(
+        "--eps-decay",
+        type=float,
+        default=0.8,
+        help="qlearn: fraction of --episodes over which epsilon falls to --eps-end",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seed-prefix", default="TRAIN")
     ap.add_argument(
@@ -762,7 +929,7 @@ def main() -> None:
     )
     ap.add_argument("--log-every", type=int, default=50)
     ap.add_argument("--out-dir", default="runs")
-    ap.add_argument("--run-name", default=None, help="default: random_shop_<play>_play")
+    ap.add_argument("--run-name", default=None, help="default: <shop>_shop_<play>_play")
     ap.add_argument(
         "--group",
         default=None,
