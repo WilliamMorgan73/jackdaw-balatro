@@ -417,16 +417,19 @@ def check_consumable_targets() -> None:
 
 def check_joker_slots() -> None:
     from jackdaw.engine.run_init import initialize_run
+    from jackdaw.env.balatro_spec import balatro_game_spec
 
     black = initialize_run("b_black", 1, "X")["joker_slots"]
+    joker_cap = next(e.max_count for e in balatro_game_spec().entity_types if e.name == "joker")
     lines = [
         "Base joker_slots = 5. Ways to hold more than 5 jokers:",
         f"  Black Deck (b_black): joker_slots={black}",
         "  Antimatter voucher (v_antimatter): +1 slot",
         "  Negative-edition jokers: +1 slot each (unbounded in principle)",
         "Engine masks (SellJoker etc.) are sized to len(jokers), no cap at 5.",
-        "Jackdaw's GameSpec/gym wrapper pads joker entities to max_count=5 (excess truncated)"
-        " -- only matters if you use BalatroGymnasiumEnv.",
+        "Jackdaw's GameSpec/gym wrapper pads joker entities to "
+        f"max_count={joker_cap} (excess truncated) -- only matters if you use"
+        " BalatroGymnasiumEnv.",
         "=> 6 sell-joker actions covers Red deck + one Negative joker; Black deck, Antimatter"
         " or several Negatives can exceed it (relevant to SRQ4). Either keep 6 and"
         " accept masking, or go to 7-8.",

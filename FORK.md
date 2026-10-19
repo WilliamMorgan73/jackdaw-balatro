@@ -8,7 +8,7 @@ for a dissertation project on automating Balatro's shop phase with deep Q-learni
 
 | File | What it does |
 |---|---|
-| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), random shop agent as the baseline. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
+| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), random shop agent as the baseline. Use `--play smart` for shop experiments: `--play random` almost never beats the first blind, so it hardly ever reaches a shop. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
 | `scripts/fuzz_engine.py` | Invariant fuzzer: full runs over every deck and stake (mixing `smart_agent`, random legal actions and mask sampling), checking every step for illegal or crashing actions, mask vs `get_legal_actions` disagreements, slot, card-ownership and price invariants, and that cash-out pays exactly the breakdown. `--easy` makes blinds trivial, so runs reach ante 8 and endless mode. Re-run it after merging upstream. |
 | `scripts/verify_shop_rl.py` | Feasibility checks for a shop-only RL wrapper: raw-state keys, shop indexing, env `deepcopy` + RNG determinism, oracle timing, pack types, consumable targeting, joker slots. |
 
@@ -62,6 +62,12 @@ Branches on this fork: `fix/rental-breakdown`, `fix/glass-destroy-rng`,
 `fix/cerulean-bell-dedupe-actions` (built on the Cerulean branch) (merged into `main`); `fix/gym-reward-blind-beaten` and
 `fix/use-consumables-in-pack` (superseded by upstream `ddc3d68`);
 `test/shop-rl-feasibility` (the history of the scripts above).
+
+Fixes for the fork's issues #1–#7, one PR each to `main`. The env fixes are branched from
+upstream: `fix/env-own-rng` (#5), `fix/aura-target` (#4, built on `fix/env-own-rng`) and
+`fix/gym-obs-caps` (#3). The harness ones are fork-only: `fix/r-ante-max` (#1, #7; log_version 6,
+built on `fix/env-own-rng`), `fix/sell-item-cost` (#6, built on `fix/r-ante-max`) and
+`docs/random-play-warning` (#2).
 
 ## Known issues and gotchas
 
