@@ -233,3 +233,54 @@ def _pick_valid_action(
         card_target=card_target,
         entity_target=entity_target,
     )
+
+
+class TestDeckStakeSeeding:
+    """The deck/stake choice comes from the env's own RNG, not global random."""
+
+    BACKS = ["b_red", "b_blue", "b_yellow", "b_green", "b_black"]
+    STAKES = [1, 2, 3, 4, 5, 6, 7, 8]
+
+    def _picks(self, env: BalatroEnvironment, n: int = 8) -> list[tuple[str, int]]:
+        out = []
+        for i in range(n):
+            env.reset(seed=f"S{i}")
+            gs = env._adapter.raw_state
+            out.append((gs["selected_back_key"], gs["stake"]))
+        return out
+
+    def _env(self, rng_seed: int | None) -> BalatroEnvironment:
+        return BalatroEnvironment(
+            adapter_factory=DirectAdapter,
+            back_keys=self.BACKS,
+            stakes=self.STAKES,
+            rng_seed=rng_seed,
+        )
+
+    def test_same_rng_seed_same_picks(self) -> None:
+        assert self._picks(self._env(3)) == self._picks(self._env(3))
+        assert self._picks(self._env(3)) != self._picks(self._env(4))
+
+    def test_global_random_has_no_effect(self) -> None:
+        random.seed(0)
+        a = self._picks(self._env(3))
+        random.seed(1)
+        assert self._picks(self._env(3)) == a
+
+    def test_envs_dont_share_a_stream(self) -> None:
+        alone = self._picks(self._env(3))
+        e1, e2 = self._env(3), self._env(9)
+        mixed = []
+        for i in range(8):
+            e2.reset(seed=f"X{i}")  # interleaved resets on another env
+            e1.reset(seed=f"S{i}")
+            gs = e1._adapter.raw_state
+            mixed.append((gs["selected_back_key"], gs["stake"]))
+        assert mixed == alone
+
+    def test_reseed(self) -> None:
+        env = self._env(None)
+        env.reseed(5)
+        a = self._picks(env)
+        env.reseed(5)
+        assert self._picks(env) == a

@@ -60,6 +60,11 @@ class BalatroEnvironment:
         End the episode (``terminated``) when the run is won, the way
         vanilla stops at its win screen.  False plays on into endless mode
         until the run is lost or truncated.
+    rng_seed:
+        Seeds the env's own RNG for the deck/stake choice (``None``: fresh
+        entropy).  The global ``random`` module is never used, so runs are
+        reproducible and envs in one process don't share a stream.
+        :meth:`reseed` reseeds it.
     """
 
     def __init__(
@@ -70,6 +75,7 @@ class BalatroEnvironment:
         max_steps: int = 10_000,
         seed_prefix: str = "TRAIN",
         end_on_win: bool = True,
+        rng_seed: int | str | None = None,
     ) -> None:
         self._adapter_factory = adapter_factory
         self._adapter = adapter_factory()
@@ -80,6 +86,8 @@ class BalatroEnvironment:
         self._end_on_win = end_on_win
         self._spec = balatro_game_spec()
 
+        # Deck/stake choice: the env's own stream, not the global ``random``
+        self._rng = random.Random(rng_seed)
         self._episode_count = 0
         self._step_count = 0
 
@@ -91,6 +99,10 @@ class BalatroEnvironment:
     @property
     def spec(self) -> GameSpec:
         return self._spec
+
+    def reseed(self, seed: int | str | None) -> None:
+        """Reseed the deck/stake choice (``None``: from fresh entropy)."""
+        self._rng.seed(seed)
 
     def reset(
         self,
@@ -106,9 +118,9 @@ class BalatroEnvironment:
 
         self._adapter = self._adapter_factory()
         back_key = (
-            random.choice(self._back_keys) if len(self._back_keys) > 1 else self._back_keys[0]
+            self._rng.choice(self._back_keys) if len(self._back_keys) > 1 else self._back_keys[0]
         )
-        stake = random.choice(self._stakes) if len(self._stakes) > 1 else self._stakes[0]
+        stake = self._rng.choice(self._stakes) if len(self._stakes) > 1 else self._stakes[0]
         self._adapter.reset(back_key, stake, seed)
 
         gs = self._adapter.raw_state
