@@ -35,20 +35,20 @@ def balatro_game_spec() -> GameSpec:
         EntityTypeSpec(
             name="hand_card",
             feature_dim=D_PLAYING_CARD,
-            max_count=8,
+            max_count=16,
             has_catalog_id=False,
         ),
         EntityTypeSpec(
             name="joker",
             feature_dim=D_JOKER,
-            max_count=5,
+            max_count=10,
             has_catalog_id=True,
             catalog_size=NUM_CENTER_KEYS,
         ),
         EntityTypeSpec(
             name="consumable",
             feature_dim=D_CONSUMABLE,
-            max_count=2,
+            max_count=6,
             has_catalog_id=True,
             catalog_size=NUM_CENTER_KEYS,
         ),

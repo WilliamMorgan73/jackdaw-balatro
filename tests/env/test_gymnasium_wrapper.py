@@ -197,6 +197,74 @@ class TestPackPickTargets:
         assert chosen.center_key == "m_glass"
 
 
+class TestObservationCaps:
+    """Actions never target an entity the observation leaves out."""
+
+    @staticmethod
+    def _env_in_round(extra_hand: int) -> tuple[BalatroGymnasiumEnv, dict]:
+        from jackdaw.engine.actions import SelectBlind
+        from jackdaw.engine.game import step
+        from jackdaw.env.action_space import get_action_mask
+
+        env = BalatroGymnasiumEnv(adapter_factory=DirectAdapter)
+        env.reset(seed=11)
+        gs = env._inner._adapter.raw_state
+        step(gs, SelectBlind())
+        gs["hand"].extend(gs["deck"][:extra_hand])  # Juggler, Certificate, ...
+        del gs["deck"][:extra_hand]
+        env._action_table = env._enumerate_actions(get_action_mask(gs), {"raw_state": gs})
+        return env, gs
+
+    @staticmethod
+    def _observed_hand(env: BalatroGymnasiumEnv, gs: dict) -> int:
+        from jackdaw.env.observation import encode_observation
+
+        obs = env._build_obs(encode_observation(gs).to_game_observation())
+        return int(obs["entity_counts"][0])
+
+    @staticmethod
+    def _max_index(env: BalatroGymnasiumEnv, *types: int) -> int:
+        idx = [
+            i
+            for fa in env._action_table
+            if fa.action_type in types
+            for i in (fa.card_target or ()) + ((fa.entity_target,) if fa.entity_target else ())
+        ]
+        return max(idx, default=-1)
+
+    def test_twelve_card_hand_is_fully_observed(self) -> None:
+        env, gs = self._env_in_round(extra_hand=4)
+        assert len(gs["hand"]) == 12
+        assert self._observed_hand(env, gs) == 12
+        hand_types = (ActionType.PlayHand, ActionType.Discard, ActionType.SwapHandLeft)
+        assert self._max_index(env, *hand_types) == 11  # the 12th card is reachable
+
+    def test_cards_past_the_cap_are_not_targeted(self) -> None:
+        env, gs = self._env_in_round(extra_hand=14)
+        assert len(gs["hand"]) == 22
+        assert self._observed_hand(env, gs) == 16
+        hand_types = (
+            ActionType.PlayHand,
+            ActionType.Discard,
+            ActionType.SwapHandLeft,
+            ActionType.SwapHandRight,
+        )
+        assert self._max_index(env, *hand_types) == 15
+
+    def test_jokers_and_consumables_past_the_cap(self) -> None:
+        from jackdaw.engine.card_factory import create_consumable, create_joker
+        from jackdaw.env.action_space import get_action_mask
+
+        env, gs = self._env_in_round(extra_hand=0)
+        gs["jokers"] = [create_joker("j_joker") for _ in range(12)]
+        gs["consumables"] = [create_consumable("c_mercury") for _ in range(8)]
+        env._action_table = env._enumerate_actions(get_action_mask(gs), {"raw_state": gs})
+        joker = (ActionType.SellJoker, ActionType.SwapJokersLeft, ActionType.SwapJokersRight)
+        assert self._max_index(env, *joker) == 9
+        cons = (ActionType.SellConsumable, ActionType.UseConsumable)
+        assert self._max_index(env, *cons) == 5
+
+
 # ------------------------------------------------------------------
 # Rewards
 # ------------------------------------------------------------------
