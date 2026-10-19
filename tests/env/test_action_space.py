@@ -566,6 +566,11 @@ class TestConsumableTargeting:
         assert min_c == 1
         assert max_c == 1
 
+    def test_aura_one_target(self):
+        """Aura needs exactly one card, though it has no max_highlighted."""
+        card = MockCard(center_key="c_aura", ability={"set": "Spectral"})
+        assert get_consumable_target_info(card) == (1, 1, True)
+
     def test_no_consumeable_config(self):
         """Consumable with no config needs no targets."""
         card = MockCard(center_key="c_hermit", ability={"set": "Tarot"})

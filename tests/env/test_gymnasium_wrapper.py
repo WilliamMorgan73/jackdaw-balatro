@@ -384,3 +384,28 @@ class TestSeededReset:
         a = picks(make())
         assert picks(make()) == a
         assert len(set(a)) > 1
+
+
+class TestConsumableTargets:
+    def test_aura_offered_once_per_editionless_card(self) -> None:
+        """Aura's card is the agent's choice, and an editioned card is never offered."""
+        from jackdaw.engine.actions import SelectBlind
+        from jackdaw.engine.card_factory import create_consumable
+        from jackdaw.engine.game import step
+        from jackdaw.env.action_space import get_action_mask
+
+        env = BalatroGymnasiumEnv(adapter_factory=DirectAdapter)
+        env.reset(seed=5)
+        gs = env._inner._adapter.raw_state
+        step(gs, SelectBlind())
+        gs["consumables"] = [create_consumable("c_aura")]
+        gs["hand"][2].edition = {"type": "foil", "foil": True}
+        env._action_table = env._enumerate_actions(get_action_mask(gs), {"raw_state": gs})
+
+        uses = [fa for fa in env._action_table if fa.action_type == ActionType.UseConsumable]
+        expected = [(i,) for i in range(len(gs["hand"])) if i != 2]
+        assert sorted(fa.card_target for fa in uses) == expected
+
+        target = gs["hand"][4]
+        env.step(env._action_table.index(next(fa for fa in uses if fa.card_target == (4,))))
+        assert target.edition

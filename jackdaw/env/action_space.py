@@ -104,6 +104,7 @@ from jackdaw.engine.actions import (
     UseConsumable as EngineUseConsumable,
 )
 from jackdaw.engine.consumables import (
+    _SPECIAL_SELECTION_MIN,
     _resolve_consumable_config,
     consumable_block_reason,
     default_use_targets,
@@ -505,6 +506,10 @@ def get_consumable_target_info(
         ``(min_cards, max_cards, needs_targets)``.  If ``needs_targets``
         is False, ``card_target`` should be ``None``.
     """
+    key = getattr(card, "center_key", "") or ""
+    if key in _SPECIAL_SELECTION_MIN:  # Aura: one card, but no max_highlighted
+        n = _SPECIAL_SELECTION_MIN[key]
+        return (n, n, True)
     cfg = _resolve_consumable_config(card)
     max_h = cfg.get("max_highlighted")
     if not max_h:
@@ -512,6 +517,18 @@ def get_consumable_target_info(
     min_h = cfg.get("min_highlighted", 1)
     mod_num = cfg.get("mod_num", max_h)
     return (min_h, mod_num, True)
+
+
+def legal_target_selections(
+    card: Any, game_state: dict[str, Any], selections: list[tuple[int, ...]]
+) -> list[tuple[int, ...]]:
+    """The *selections* (hand index tuples) *card* can actually be used on.
+
+    :func:`get_consumable_target_info` only gives the selection size; this
+    applies the per-selection rules too (Aura's card must be editionless,
+    and so on), via the same check the engine uses.
+    """
+    return [s for s in selections if consumable_block_reason(card, game_state, s) is None]
 
 
 # ---------------------------------------------------------------------------

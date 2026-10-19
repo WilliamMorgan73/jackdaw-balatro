@@ -40,6 +40,9 @@ class Agent(Protocol):
 # ---------------------------------------------------------------------------
 
 
+_TARGET_TRIES = 20
+
+
 class RandomAgent:
     """Uniform random agent — picks randomly from legal actions.
 
@@ -93,17 +96,25 @@ class RandomAgent:
             gs = info.get("raw_state", {})
             source = gs.get(source_key, [])
             if entity_target < len(source):
-                from jackdaw.env.action_space import get_consumable_target_info
+                from jackdaw.env.action_space import (
+                    get_consumable_target_info,
+                    legal_target_selections,
+                )
 
                 card = source[entity_target]
                 min_cards, max_cards, needs = get_consumable_target_info(card)
                 if needs:
                     legal_cards = np.nonzero(action_mask.card_mask)[0]
-                    if len(legal_cards) >= min_cards:
+                    # A random selection may break a per-card rule (Aura needs an
+                    # editionless card): redraw a few times, else use the default
+                    for _ in range(_TARGET_TRIES if len(legal_cards) >= min_cards else 0):
                         n = min(len(legal_cards), max_cards)
                         count = self._rng.randint(min_cards, n)
                         selected = sorted(self._rng.sample(list(legal_cards), count))
-                        card_target = tuple(int(i) for i in selected)
+                        sel = tuple(int(i) for i in selected)
+                        if legal_target_selections(card, gs, [sel]):
+                            card_target = sel
+                            break
 
         return FactoredAction(
             action_type=at,
