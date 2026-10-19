@@ -252,7 +252,9 @@ class RunLogger:
 
     def __init__(self, out_dir: Path) -> None:
         self._files = {
-            name: open(out_dir / f"{name}.jsonl", "w") for name in ("steps", "rounds", "shops")
+            # line-buffered: a run still training can be read up to its last line
+            name: open(out_dir / f"{name}.jsonl", "w", buffering=1)
+            for name in ("steps", "rounds", "shops")
         }
 
     def log_step(self, **row: Any) -> None:
@@ -582,6 +584,7 @@ class Evaluator:
         self.csv_file = open(out_dir / "episodes.csv", "w", newline="")
         self.log = csv.DictWriter(self.csv_file, fieldnames=EVAL_FIELDS)
         self.log.writeheader()
+        self.csv_file.flush()
         self.round = 0
 
     def run(self, agent: ShopAgent, train_episodes: int) -> list[dict[str, Any]]:
@@ -600,8 +603,8 @@ class Evaluator:
             )
             row |= {"eval_round": self.round, "train_episodes": train_episodes}
             self.log.writerow(row)
+            self.csv_file.flush()
             rows.append(row)
-        self.csv_file.flush()
         self.round += 1
         return rows
 
@@ -640,6 +643,7 @@ def train(args: argparse.Namespace) -> None:
     csv_file = open(out_dir / "episodes.csv", "w", newline="")
     log = csv.DictWriter(csv_file, fieldnames=EPISODE_FIELDS)
     log.writeheader()
+    csv_file.flush()  # flushed per row, so the dashboard can read a run while it trains
 
     def evaluate(train_episodes: int) -> None:
         assert evaluator is not None
@@ -664,6 +668,7 @@ def train(args: argparse.Namespace) -> None:
         total_steps += row["shop_steps"]
         antes.append(row["ante"])
         log.writerow(row)
+        csv_file.flush()
         if writer:
             for key in ("ante", "won", "return", "shop_steps", "dollars_spent"):
                 writer.add_scalar(f"episode/{key}", row[key], total_steps)
