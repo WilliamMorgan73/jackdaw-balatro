@@ -1,5 +1,5 @@
-"""Shop-only training harness: a play agent for every non-shop phase and a random
-or tabular Q-learning shop agent.
+"""Shop-only training harness: a play agent for every non-shop phase and a random,
+tabular Q-learning or hand-written shop agent.
 
 The shop agent acts in a 17-action space (5 buy + 6 sell joker + 2 sell
 consumable + 2 use consumable + reroll + skip).  Every other phase (blind
@@ -10,6 +10,11 @@ select, play/discard, cash out, pack opening) is handled by the play agent.
 (``tabular_state``), explained in ``docs/q-learning-shop-agent.md``.  Other
 learning agents (e.g. a Dueling DQN) implement the same ``act`` / ``observe``
 interface and drop in the same way.
+``--shop heuristic`` and ``--shop smart`` are fixed hand-written shops for the
+play-policy ceiling test (how far runs get with a sensible shop): ``heuristic``
+buys the best affordable joker, uses planets and spends on vouchers and packs
+only above $25; ``smart`` is ``smart_agent``'s own shop logic, limited to the
+17 actions.
 
 Use ``--play smart`` for shop experiments: the random play agent
 almost never beats the first blind, so with ``--play random`` the shop is
@@ -42,6 +47,8 @@ Usage::
         --eval-every 50 --eval-episodes 20
     uv run python scripts/train_random_shop.py --shop qlearn --play smart \\
         --episodes 1000 --eval-every 100 --eval-episodes 20
+    uv run python scripts/train_random_shop.py --shop heuristic --play smart \\
+        --episodes 1000 --eval-every 1000 --eval-episodes 500
     # one config, several training seeds, analysed as one group (repeat with --seed 1, 2, ...)
     uv run python scripts/train_random_shop.py --play smart --eval-every 50 \\
         --seed 0 --group random_smart --run-name random_smart_s0
@@ -287,9 +294,97 @@ class QLearningShopAgent:
         path.write_text(json.dumps(table, indent=1))
 
 
+def _card_set(card: Any) -> str:
+    """A card's set ("Joker", "Planet", "Tarot", ...), as smart_agent reads it."""
+    a = getattr(card, "ability", None)
+    return a.get("set", "") if isinstance(a, dict) else ""
+
+
+class HeuristicShopAgent:
+    """Hand-written shop for the play-policy ceiling test.
+
+    In order, the first legal one of: use an owned planet; buy the affordable
+    joker in shop slot 0/1 that ``smart_agent._joker_value`` rates highest (any
+    money); redeem the voucher, then open a pack, but only if it leaves at
+    least ``interest_floor`` dollars (the interest cap); else leave.  Never
+    rerolls or sells.  Sees the raw game state (``state="raw"``).
+    """
+
+    def __init__(self, interest_floor: int = 25) -> None:
+        self.interest_floor = interest_floor
+
+    @property
+    def params(self) -> dict[str, int]:
+        return {"interest_floor": self.interest_floor}
+
+    def act(self, gs: dict[str, Any], mask: np.ndarray, greedy: bool = False) -> int:
+        from jackdaw.cli.smart_agent import _joker_value
+
+        consumables = gs["consumables"]
+        for a in USE_CONS:
+            slot = a - USE_CONS[0]
+            if mask[a] and slot < len(consumables) and _card_set(consumables[slot]) == "Planet":
+                return a
+        shop_cards = gs.get("shop_cards", [])
+        jokers = [
+            (_joker_value(shop_cards[a - BUY_CARD[0]]), a)
+            for a in BUY_CARD
+            if mask[a] and _card_set(shop_cards[a - BUY_CARD[0]]) == "Joker"
+        ]
+        if jokers:
+            return max(jokers)[1]  # ties go to slot 1; either is fine
+        spare = gs["dollars"] - self.interest_floor
+        vouchers = gs.get("shop_vouchers", [])
+        if mask[BUY_VOUCHER] and vouchers and vouchers[0].cost <= spare:
+            return BUY_VOUCHER
+        boosters = gs.get("shop_boosters", [])
+        for a in BUY_PACK:
+            if mask[a] and boosters[a - BUY_PACK[0]].cost <= spare:
+                return a
+        return SKIP
+
+    def observe(self, *transition: Any) -> None:
+        pass  # fixed rules
+
+
+def _action_key(fa: FactoredAction) -> tuple[Any, ...]:
+    return fa.action_type, fa.entity_target, fa.card_target
+
+
+class SmartShopAgent:
+    """``smart_agent``'s own shop logic, limited to the 17 shop actions.
+
+    A choice with no shop index (e.g. a third shop card after Overstock, or a
+    tarot used on hand cards) or one the mask rules out becomes ``SKIP``;
+    ``fallbacks`` counts them.  Sees the raw game state (``state="raw"``).
+    """
+
+    def __init__(self) -> None:
+        self.index = {_action_key(to_factored(a)): a for a in range(N_ACTIONS)}
+        self.fallbacks: Counter[str] = Counter()
+
+    def act(self, gs: dict[str, Any], mask: np.ndarray, greedy: bool = False) -> int:
+        from jackdaw.cli.smart_agent import smart_agent
+        from jackdaw.engine.actions import get_legal_actions
+
+        engine_action = smart_agent(gs, get_legal_actions(gs))
+        a = self.index.get(_action_key(engine_action_to_factored(engine_action, gs)))
+        if a is None or not mask[a]:
+            self.fallbacks[type(engine_action).__name__] += 1
+            return SKIP
+        return a
+
+    def observe(self, *transition: Any) -> None:
+        pass  # fixed rules
+
+
 def make_shop_agent(
     args: argparse.Namespace, rng: random.Random
-) -> RandomShopAgent | QLearningShopAgent:
+) -> RandomShopAgent | QLearningShopAgent | HeuristicShopAgent | SmartShopAgent:
+    if args.shop == "heuristic":
+        return HeuristicShopAgent(args.interest_floor)
+    if args.shop == "smart":
+        return SmartShopAgent()
     eval_rng = random.Random(f"eval_{args.seed}")
     if args.shop == "qlearn":
         return QLearningShopAgent(
@@ -305,9 +400,11 @@ def make_shop_agent(
 
 
 def state_kind(args: argparse.Namespace) -> str:
-    """What the shop agent sees: ``tabular_state`` for Q-learning, else Jackdaw's
-    global context vector."""
-    return "tabular" if args.shop == "qlearn" else "global"
+    """What the shop agent sees: ``tabular_state`` for Q-learning, the raw game
+    state for the hand-written shops, else Jackdaw's global context vector."""
+    if args.shop == "qlearn":
+        return "tabular"
+    return "raw" if args.shop in ("heuristic", "smart") else "global"
 
 
 class RandomPlayAgent:
@@ -436,8 +533,9 @@ EARNINGS = {
 class ShopEnv:
     """Exposes only shop decisions; the play agent drives everything else.
 
-    State is Jackdaw's ``global_context`` vector (``state="global"``) or the
-    small discrete ``tabular_state`` (``state="tabular"``).  Reward is R_ante
+    State is Jackdaw's ``global_context`` vector (``state="global"``), the
+    small discrete ``tabular_state`` (``state="tabular"``) or the live engine
+    dict (``state="raw"``, for hand-written shops that act on it at once).  Reward is R_ante
     only (no oracle term yet).
     """
 
@@ -636,6 +734,8 @@ class ShopEnv:
     def _state(self) -> np.ndarray:
         if self.state == "tabular":
             return tabular_state(self.gs, shop_mask(self._mask))
+        if self.state == "raw":
+            return self.gs
         return self._obs.global_context
 
     def _mask17(self, done: bool) -> np.ndarray:
@@ -873,6 +973,12 @@ def train(args: argparse.Namespace) -> None:
             f"Q-table: {len(shop_agent.q)} states visited, final epsilon "
             f"{shop_agent.epsilon:.3f} -> {out_dir}/q_table.json"
         )
+    if isinstance(shop_agent, SmartShopAgent):
+        fb = shop_agent.fallbacks
+        print(
+            f"smart shop: {sum(fb.values())} choices outside the 17 actions, left instead"
+            + (" (" + ", ".join(f"{k}: {v}" for k, v in fb.most_common()) + ")" if fb else "")
+        )
     print(f"logs: {out_dir}/")
 
 
@@ -929,9 +1035,16 @@ def main() -> None:
     )
     ap.add_argument(
         "--shop",
-        choices=["random", "qlearn"],
+        choices=["random", "qlearn", "heuristic", "smart"],
         default="random",
-        help="shop policy: random baseline, or tabular Q-learning",
+        help="shop policy: random baseline, tabular Q-learning, or a fixed hand-written shop"
+        " (heuristic rules, or smart_agent's shop) for the ceiling test",
+    )
+    ap.add_argument(
+        "--interest-floor",
+        type=int,
+        default=25,
+        help="heuristic: money kept back from vouchers and packs (jokers ignore it)",
     )
     ap.add_argument("--alpha", type=float, default=0.1, help="qlearn: learning rate")
     ap.add_argument("--gamma", type=float, default=0.95, help="qlearn: discount factor")
