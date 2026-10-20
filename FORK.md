@@ -8,17 +8,20 @@ for a dissertation project on automating Balatro's shop phase with deep Q-learni
 
 | File | What it does |
 |---|---|
-| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), and a shop agent: `--shop random` (the baseline) or `--shop qlearn` (tabular Q-learning, see [docs/q-learning-shop-agent.md](docs/q-learning-shop-agent.md)). Use `--play smart` for shop experiments: `--play random` almost never beats the first blind, so it hardly ever reaches a shop. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
+| `scripts/train_random_shop.py` | Shop-only training harness: a 17-action shop space, a pluggable play agent for every other phase (`--play random` or Jackdaw's `smart_agent`), and a shop agent: `--shop random` (the baseline) `--shop qlearn` (tabular Q-learning, see [docs/q-learning-shop-agent.md](docs/q-learning-shop-agent.md)), or a fixed hand-written shop for the play-policy ceiling test: `--shop heuristic` (best affordable joker, planets, vouchers and packs only above `--interest-floor` $25) or `--shop smart` (`smart_agent`'s own shop logic, limited to the 17 actions). Use `--play smart` for shop experiments: `--play random` almost never beats the first blind, so it hardly ever reaches a shop. Writes `runs/<name>/` (`config.json`, `episodes.csv`, `steps.jsonl`, `rounds.jsonl`) for the balatro-run-analysis dashboard (separate repo). |
 | `scripts/fuzz_engine.py` | Invariant fuzzer: full runs over every deck and stake (mixing `smart_agent`, random legal actions and mask sampling), checking every step for illegal or crashing actions, mask vs `get_legal_actions` disagreements, slot, card-ownership and price invariants, and that cash-out pays exactly the breakdown. `--easy` makes blinds trivial, so runs reach ante 8 and endless mode. Re-run it after merging upstream. |
 | `scripts/verify_shop_rl.py` | Feasibility checks for a shop-only RL wrapper: raw-state keys, shop indexing, env `deepcopy` + RNG determinism, oracle timing, pack types, consumable targeting, joker slots. |
 | `docs/q-learning-shop-agent.md` | How the tabular Q-learning shop agent works: state, actions, reward, update rule, pseudocode, diagrams, limitations. |
 | `tests/scripts/test_q_shop_agent.py` | Unit tests for the Q-learning agent (legal actions only, update formula, epsilon schedule, reproducibility). |
+| `tests/scripts/test_heuristic_shop_agents.py` | Unit tests for the ceiling-test shops (`--shop heuristic` and `--shop smart`): rule order, the interest floor, the 17-action mapping and fallback, legal actions only. |
 
 ```bash
 uv run python scripts/train_random_shop.py --episodes 500 --play smart \
     --decks b_red,b_blue --stakes 1 --run-name my_run
 uv run python scripts/train_random_shop.py --episodes 1000 --play smart --shop qlearn \
     --eval-every 100 --eval-episodes 20 --run-name qlearn_run
+uv run python scripts/train_random_shop.py --episodes 1000 --play smart --shop heuristic \
+    --eval-every 1000 --eval-episodes 500 --run-name heuristic_run
 uv run python scripts/verify_shop_rl.py
 uv run python scripts/fuzz_engine.py --games 300 && uv run python scripts/fuzz_engine.py --games 150 --easy --p-smart 0.2
 ```
