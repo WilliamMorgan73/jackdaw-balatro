@@ -19,6 +19,8 @@ only above $25; ``smart`` is ``smart_agent``'s own shop logic, limited to the
 Use ``--play smart`` for shop experiments: the random play agent
 almost never beats the first blind, so with ``--play random`` the shop is
 hardly ever reached (0.05 shop decisions per episode, against ~7 with smart).
+``--play strong`` (``scripts/play_policy.py``) is ``smart_agent`` with exact
+scoring and blind- and draw-aware discards.
 
 Each run writes ``runs/<run-name>/``: ``config.json``, ``episodes.csv`` (one
 row per episode; ``max_ante`` is the highest ante a blind was played in, so a
@@ -451,7 +453,11 @@ class SmartPlayAgent:
         return engine_action_to_factored(smart_agent(gs, env._adapter.get_legal_actions()), gs)
 
 
-def make_play_agent(kind: str, rng: random.Random) -> RandomPlayAgent | SmartPlayAgent:
+def make_play_agent(kind: str, rng: random.Random) -> Any:
+    if kind == "strong":
+        from play_policy import StrongPlayAgent  # scripts/play_policy.py, next to this file
+
+        return StrongPlayAgent()
     return RandomPlayAgent(rng) if kind == "random" else SmartPlayAgent()
 
 
@@ -997,6 +1003,7 @@ def write_config(out_dir: Path, args: argparse.Namespace, play_agent: Any, shop_
         "play_agent": type(play_agent).__name__,
         "shop_agent": type(shop_agent).__name__,
         "agent_params": getattr(shop_agent, "params", {}),
+        "play_params": getattr(play_agent, "params", {}),
         "n_actions": N_ACTIONS,
         "action_names": ACTION_NAMES,
         # 2: rounds.jsonl ante = ante the blind was played in (v1 logged beaten
@@ -1029,9 +1036,10 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=200)
     ap.add_argument(
         "--play",
-        choices=["random", "smart"],
+        choices=["random", "smart", "strong"],
         default="random",
-        help="non-shop policy: random (rarely reaches a shop), or Jackdaw's greedy smart_agent",
+        help="non-shop policy: random (rarely reaches a shop), Jackdaw's greedy smart_agent, or"
+        " strong (smart_agent with exact, blind-aware play and discards: scripts/play_policy.py)",
     )
     ap.add_argument(
         "--shop",

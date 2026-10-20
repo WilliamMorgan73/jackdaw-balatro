@@ -6,7 +6,10 @@ play-phase oracle Phi(s)) and then runs a minimal prototype end to end.
 
 Usage::
 
-    uv run python scripts/verify_shop_rl.py [--episodes 20]
+    uv run python scripts/verify_shop_rl.py [--episodes 20] [--play smart|strong]
+
+``--play strong`` uses ``scripts/play_policy.py`` instead of ``smart_agent`` for
+autoplay and inside Phi, so the oracle timing (item 4) is for that policy.
 """
 
 from __future__ import annotations
@@ -33,6 +36,8 @@ from jackdaw.env.action_space import (
 )
 
 RESULTS: list[tuple[str, str, str]] = []
+POLICY = smart_agent  # autoplay and Phi's play policy; --play strong swaps it
+POLICY_NAME = "smart_agent"
 
 
 def report(item: str, status: str, detail: str) -> None:
@@ -49,7 +54,7 @@ def phase_of(env: BalatroEnvironment) -> GamePhase:
 
 
 def autoplay_action(env: BalatroEnvironment) -> FactoredAction:
-    """smart_agent's choice for the current state, as a FactoredAction."""
+    """The play policy's choice for the current state, as a FactoredAction."""
     from jackdaw.engine.actions import PickPackCard
     from jackdaw.env.action_space import get_action_mask
 
@@ -62,11 +67,11 @@ def autoplay_action(env: BalatroEnvironment) -> FactoredAction:
         for a in env._adapter.get_legal_actions()
         if not isinstance(a, PickPackCard) or (picks is not None and picks[a.card_index])
     ]
-    return engine_action_to_factored(smart_agent(gs, legal), gs)
+    return engine_action_to_factored(POLICY(gs, legal), gs)
 
 
 def advance_to(env: BalatroEnvironment, target: GamePhase, max_steps: int = 2000) -> tuple:
-    """Step with smart_agent until ``target`` phase (or game over)."""
+    """Step with the play policy until ``target`` phase (or game over)."""
     out = None
     for _ in range(max_steps):
         ph = phase_of(env)
@@ -263,7 +268,7 @@ def check_deepcopy() -> None:
     detail = (
         f"n={len(phi)} shop states (antes 1-2)\n"
         f"deepcopy: mean {np.mean(copy_t) * 1000:.1f} ms, max {np.max(copy_t) * 1000:.1f} ms\n"
-        f"simulate blind (smart_agent policy): mean {np.mean(blind_t) * 1000:.1f} ms,"
+        f"simulate blind ({POLICY_NAME} policy): mean {np.mean(blind_t) * 1000:.1f} ms,"
         f" max {np.max(blind_t) * 1000:.1f} ms\n"
         f"=> one Phi(s) call ~ {np.mean(phi) * 1000:.0f} ms  "
         f"(~{1 / np.mean(phi):.0f} oracle calls/s"
@@ -487,7 +492,7 @@ def run_prototype(episodes: int) -> None:
         wins.append(env.episode_won)
     dt = time.perf_counter() - t0
     detail = (
-        f"{episodes} EVAL-seed runs, random shop agent + smart_agent autoplay\n"
+        f"{episodes} EVAL-seed runs, random shop agent + {POLICY_NAME} autoplay\n"
         f"mean ante {np.mean(antes):.2f} (min {min(antes)}, max {max(antes)}), wins {sum(wins)}\n"
         f"{shop_steps} shop decisions, {dt:.1f}s total ({dt / episodes:.2f}s/run without oracle)\n"
         f"errors: {errors or 'none'}"
@@ -518,7 +523,18 @@ def run_prototype(episodes: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=20)
+    ap.add_argument(
+        "--play",
+        choices=["smart", "strong"],
+        default="smart",
+        help="play policy for autoplay and Phi: smart_agent, or scripts/play_policy.py",
+    )
     args = ap.parse_args()
+    global POLICY, POLICY_NAME
+    if args.play == "strong":
+        from play_policy import strong_agent  # scripts/play_policy.py, next to this file
+
+        POLICY, POLICY_NAME = strong_agent, "strong_agent"
     random.seed(0)
 
     check_raw_state()
