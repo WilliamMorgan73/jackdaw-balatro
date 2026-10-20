@@ -6,10 +6,10 @@ play-phase oracle Phi(s)) and then runs a minimal prototype end to end.
 
 Usage::
 
-    uv run python scripts/verify_shop_rl.py [--episodes 20] [--play smart|strong]
+    uv run python scripts/verify_shop_rl.py [--episodes 20]
 
-``--play strong`` uses ``scripts/play_policy.py`` instead of ``smart_agent`` for
-autoplay and inside Phi, so the oracle timing (item 4) is for that policy.
+Autoplay and Phi use ``smart_agent``.  The copy in balatro-shop-rl also takes
+``--play strong`` to time Phi with the stronger play policy.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from jackdaw.env.action_space import (
 )
 
 RESULTS: list[tuple[str, str, str]] = []
-POLICY = smart_agent  # autoplay and Phi's play policy; --play strong swaps it
+POLICY = smart_agent  # autoplay and Phi's play policy
 POLICY_NAME = "smart_agent"
 
 
@@ -523,18 +523,7 @@ def run_prototype(episodes: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=20)
-    ap.add_argument(
-        "--play",
-        choices=["smart", "strong"],
-        default="smart",
-        help="play policy for autoplay and Phi: smart_agent, or scripts/play_policy.py",
-    )
     args = ap.parse_args()
-    global POLICY, POLICY_NAME
-    if args.play == "strong":
-        from play_policy import strong_agent  # scripts/play_policy.py, next to this file
-
-        POLICY, POLICY_NAME = strong_agent, "strong_agent"
     random.seed(0)
 
     check_raw_state()
